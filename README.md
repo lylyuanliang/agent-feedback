@@ -33,47 +33,57 @@
 
 Agent Feedback Bridge 不仅是一个前端悬浮组件，而是一套连接**移动真机端侧运行现场**与**开发机本地 AI Coding Agent** 的完整自动化闭环神经系统。整个生命周期涵盖 5 大阶段：
 
-```
-┌───────────────────────────────────────────────────────────────────────────┐
-│ 1. 应用极简接入 (Host App Integration)                                     │
-│    vite.config.ts 引入插件 ──(DEV 模式自动注入)──> 磁吸悬浮胶囊一键挂载     │
-│    生产构建 (vite build) ──(100% Zero-DCE)──> 物理剥离 0 字节残留         │
-└─────────────────────────────────────┬─────────────────────────────────────┘
-                                      │
-                                      ▼
-┌───────────────────────────────────────────────────────────────────────────┐
-│ 2. 端侧全息现场抓取 (Holographic In-App Capture)                          │
-│    手机真机轻触胶囊 ──> 自动截取高保真视觉现场 (html2canvas)               │
-│                     ──> 自动抓取当前路由、设备 DPR、视口、Console 日志     │
-│                     ──> 用户补充简短描述/圈选 ──> 打包提交至 DevServer     │
-└─────────────────────────────────────┬─────────────────────────────────────┘
-                                      │
-                                      ▼
-┌───────────────────────────────────────────────────────────────────────────┐
-│ 3. 日级分片落盘与哨兵防抖唤醒 (Sharded Storage & Sentinel Debounce)        │
-│    Connect 中间件 ──> 安全校验 ──> 写入 scratch/feedback/feedback_日期.json │
-│    后台静默哨兵 (0% CPU, 0 Token) 捕获新工单 ──> 开启 10 秒防抖聚合倒计时  │
-│    (将用户连续追加的多张截图/补充说明归并为单个工单批次)                    │
-│    倒计时结束 ──> 触发适配器 ──> 自动唤醒 IDE 中的 AI Coding Agent        │
-└─────────────────────────────────────┬─────────────────────────────────────┘
-                                      │
-                                      ▼
-┌───────────────────────────────────────────────────────────────────────────┐
-│ 4. Coding Agent 源码自愈与状态回写 (Agent Reasoning & Code Repair)         │
-│    AI Agent 读取工单全息现场 (截图/报错栈/路由) ──> 自主定位源码 Bug       │
-│    针对性修改代码 ──> 执行单元/端到端自动化测试验证通过                   │
-│    调用 CLI 回写工单状态:                                                 │
-│    npx agent-feedback update-status <id> completed "修复说明"             │
-│    (可选) 向端侧主动推送发版通知: npx agent-feedback notice "新版本已发布"│
-└─────────────────────────────────────┬─────────────────────────────────────┘
-                                      │
-                                      ▼
-┌───────────────────────────────────────────────────────────────────────────┐
-│ 5. 端侧时间轴复验与体验闭环 (Timeline Real-time Verification)             │
-│    Vite HMR 热更新 / 本地构建部署 ──> 手机端页面实时更新                   │
-│    用户打开胶囊「历史与进度」时间轴 ──> 即时看到工单变为绿色 "completed"   │
-│    查看 Agent 填写的详细自愈报告 ──> 在真机上实测复验，形成完美自愈闭环   │
-└───────────────────────────────────────────────────────────────────────────┘
+```mermaid
+flowchart TD
+    subgraph P1 ["🚀 阶段一 · 应用极简接入 (Host App Integration)"]
+        direction TB
+        A["<b>宿主应用 vite.config.ts</b><br/>plugins: [ agentFeedback() ]"] -->|DEV 模式自动注入| B["<b>端侧磁吸悬浮胶囊自挂载</b><br/>&lt;agent-feedback-widget&gt;"]
+        A -.->|vite build 生产构建| B2["<b>100% Zero-DCE 物理剥离</b><br/>0 字节代码残留 · 0 调试端点暴露"]
+    end
+
+    subgraph P2 ["📱 阶段二 · 端侧全息现场抓取 (Holographic In-App Capture)"]
+        direction TB
+        B -->|真机一键轻触| C["<b>多模态现场全息装配</b><br/>• html2canvas 真机视觉快照<br/>• 页面路由 / 视口 DPR / 平台类型<br/>• 最近 30 条 Console 报错与警告栈"]
+        C -->|用户输入描述或圈选| D["<b>提交工单至 DevServer</b><br/>POST /api/__agent_feedback/submit"]
+    end
+
+    subgraph P3 ["⚡ 阶段三 · 日级分片落盘与哨兵防抖 (Sharded Storage & Sentinel)"]
+        direction TB
+        D -->|Connect 中间件校验| E["<b>本地日级分片存储引擎</b><br/>feedback_YYYY-MM-DD.json<br/>+ feedback_index.json 增量索引"]
+        E -->|文件落盘触发| F["<b>Node 原生静默哨兵守候</b><br/>npx agent-feedback watch<br/><i>(平时 0% CPU · 0 Token 纯休眠)</i>"]
+        F -->|捕获新工单| G{"<b>10 秒防抖聚合窗口</b><br/>归并多图连发与连续追评"}
+        G -->|倒计时结束| H["<b>主动唤醒 IDE 适配器</b><br/>Antigravity / Claude Code / Cursor"]
+    end
+
+    subgraph P4 ["🤖 阶段四 · Coding Agent 源码自愈 (Agent Reasoning & Code Repair)"]
+        direction TB
+        H -->|进入自愈会话| I["<b>AI Coding Agent 源码级诊断</b><br/>• 读取全息现场、真机截图与报错栈<br/>• 精准定位源码 Bug 并执行修复<br/>• 本地自动化测试验证"]
+        I -->|CLI 状态回写| J["<b>更新工单并写入自愈说明</b><br/>npx agent-feedback update-status &lt;id&gt; completed"]
+        I -.->|主动推送公告| J2["<b>向端侧时间轴插入高亮系统通知</b><br/>npx agent-feedback notice '新版本已发布'"]
+    end
+
+    subgraph P5 ["✨ 阶段五 · 端侧时间轴复验闭环 (Timeline Real-time Verification)"]
+        direction TB
+        J & J2 -->|Vite HMR / 新构建包生效| K["<b>端侧流式时间轴即时感应</b><br/>用户打开「历史与进度」Tab<br/>• 工单秒变绿色 '已完成' 卡片<br/>• 查看 Agent 填写的详细自愈分析"]
+        K -->|真机直接复验| L["<b>🎉 体验闭环达成</b><br/>0 切屏 · 0 沟通成本 · 极速自愈"]
+    end
+
+    P1 ==> P2
+    P2 ==> P3
+    P3 ==> P4
+    P4 ==> P5
+
+    classDef p1Style fill:#0f172a,stroke:#38bdf8,stroke-width:2px,color:#f8fafc,rx:8px,ry:8px;
+    classDef p2Style fill:#0f172a,stroke:#34d399,stroke-width:2px,color:#f8fafc,rx:8px,ry:8px;
+    classDef p3Style fill:#0f172a,stroke:#a78bfa,stroke-width:2px,color:#f8fafc,rx:8px,ry:8px;
+    classDef p4Style fill:#0f172a,stroke:#fbbf24,stroke-width:2px,color:#f8fafc,rx:8px,ry:8px;
+    classDef p5Style fill:#0f172a,stroke:#4edea3,stroke-width:2px,color:#f8fafc,rx:8px,ry:8px;
+
+    class A,B,B2 p1Style;
+    class C,D p2Style;
+    class E,F,G,H p3Style;
+    class I,J,J2 p4Style;
+    class K,L p5Style;
 ```
 
 ### 闭环流程各阶段职责详解

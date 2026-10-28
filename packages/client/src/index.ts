@@ -397,6 +397,7 @@ export class AgentFeedbackWidget extends CustomElementBase {
   private currentLeft: number | null = null;
   private currentTop: number | null = null;
   private dragThresholdMoved = false;
+  private modalOpenedAt = 0;
 
   // 表单状态
   private feedbackContent = '';
@@ -537,6 +538,9 @@ export class AgentFeedbackWidget extends CustomElementBase {
    */
   public toggleModal(open?: boolean) {
     this.isOpen = typeof open === 'boolean' ? open : !this.isOpen;
+    if (this.isOpen) {
+      this.modalOpenedAt = Date.now();
+    }
     this.submitFeedbackMessage = null;
     this.render();
     this.bindEvents();
@@ -782,7 +786,7 @@ export class AgentFeedbackWidget extends CustomElementBase {
         }
       };
 
-      const onPointerEnd = () => {
+      const onPointerEnd = (e?: PointerEvent) => {
         if (!isPointerActive) return;
         isPointerActive = false;
 
@@ -807,7 +811,10 @@ export class AgentFeedbackWidget extends CustomElementBase {
           }, 250);
         } else {
           // 未发生有效拖拽，直接响应点击打开弹窗！
-          this.toggleModal();
+          if (e && typeof e.preventDefault === 'function') {
+            try { e.preventDefault(); } catch {}
+          }
+          this.toggleModal(true);
         }
       };
 
@@ -828,7 +835,10 @@ export class AgentFeedbackWidget extends CustomElementBase {
         if (typeof pill.releasePointerCapture === 'function') {
           try { pill.releasePointerCapture(e.pointerId); } catch {}
         }
-        onPointerEnd();
+        if (!hasMoved && typeof e.preventDefault === 'function') {
+          try { e.preventDefault(); } catch {}
+        }
+        onPointerEnd(e);
       };
 
       pill.addEventListener('pointerup', handlePointerUp);
@@ -837,6 +847,7 @@ export class AgentFeedbackWidget extends CustomElementBase {
       // 双重保险：兜底 click 事件 (针对辅助功能或合成点击)
       pill.addEventListener('click', (e) => {
         e.stopPropagation();
+        e.preventDefault();
         if (!this.isOpen && !hasMoved) {
           this.toggleModal(true);
         }
@@ -852,7 +863,18 @@ export class AgentFeedbackWidget extends CustomElementBase {
     const backdrop = this.shadow.querySelector?.('.modal-backdrop');
     if (backdrop) {
       backdrop.addEventListener?.('click', (e: any) => {
+        // 关键防御：屏蔽打开弹窗 450ms 内的合成穿透点击，防止手指抬起时的延迟点击误关弹窗
+        if (Date.now() - this.modalOpenedAt < 450) {
+          e.stopPropagation();
+          e.preventDefault();
+          return;
+        }
         if (e.target === backdrop) this.toggleModal(false);
+      });
+      backdrop.addEventListener?.('pointerup', (e: any) => {
+        if (Date.now() - this.modalOpenedAt < 450) {
+          e.stopPropagation();
+        }
       });
     }
 
@@ -901,6 +923,29 @@ export class AgentFeedbackWidget extends CustomElementBase {
     // 6. 表单输入与提交
     const textarea = this.shadow.querySelector?.('.feedback-textarea') as HTMLTextAreaElement;
     if (textarea) {
+      // 关键优化：明确失焦，保证弹窗呼出时绝不自动激活软键盘破坏移动端布局
+      try {
+        textarea.blur();
+        if (typeof document !== 'undefined' && document.activeElement === textarea) {
+          (document.activeElement as HTMLElement)?.blur?.();
+        }
+      } catch {}
+
+      // 拦截刚打开 450ms 内的合成点击聚焦，确保用户必须主动二次点击输入框才激活软键盘
+      textarea.addEventListener?.('click', (e) => {
+        if (Date.now() - this.modalOpenedAt < 450) {
+          e.preventDefault();
+          e.stopPropagation();
+          try { textarea.blur(); } catch {}
+        }
+      });
+      textarea.addEventListener?.('pointerdown', (e) => {
+        if (Date.now() - this.modalOpenedAt < 450) {
+          e.preventDefault();
+          e.stopPropagation();
+        }
+      });
+
       textarea.addEventListener?.('input', () => {
         this.feedbackContent = textarea.value;
       });
