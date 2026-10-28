@@ -1,4 +1,4 @@
-﻿/**
+/**
  * Vite Demo Application Main Entrypoint
  */
 

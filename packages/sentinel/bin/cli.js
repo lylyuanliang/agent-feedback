@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env node
+#!/usr/bin/env node
 
 /**
  * @agent-feedback/sentinel CLI
@@ -8,7 +8,8 @@
 import {
   startSentinel,
   startMcpServer,
-  updateFeedbackStatus
+  updateFeedbackStatus,
+  insertNotice
 } from '../src/index.ts';
 
 const rawArgs = process.argv.slice(2);
@@ -24,6 +25,7 @@ function printHelp() {
   watch                           启动静默哨兵监听队列 (默认)
   mcp                             启动标准 Stdio MCP 服务器 (Cursor / Antigravity / Claude)
   update-status <id> <status> [reply]  更新指定反馈项的状态与回复
+  notice <content>                向当天分片插入一条系统通知工单
 
 选项:
   --dir <path>                    反馈数据持久化目录 (默认: .agent/feedback)
@@ -134,7 +136,22 @@ async function main() {
     process.exit(0);
   }
 
-  // 3. 哨兵监听模式: watch (或直接作为缺省命令)
+  // 3. 系统通知写入命令: notice <content>
+  if (command === 'notice') {
+    const content = positional.slice(1).join(' ');
+    if (!content || !content.trim()) {
+      console.error('[!] 错误: notice 命令需要指定通知内容');
+      console.error('    示例: agent-feedback notice "AI Agent 修复通知：已重构高山拓扑视图"');
+      process.exit(1);
+    }
+
+    const item = insertNotice(options.dir, content.trim());
+    console.log(`[*] ✅ 成功插入系统通知工单 [ID: ${item.id}, 日期: ${item.date}]`);
+    console.log(JSON.stringify(item, null, 2));
+    process.exit(0);
+  }
+
+  // 4. 哨兵监听模式: watch (或直接作为缺省命令)
   if (command === 'watch') {
     await startSentinel({
       adapter: options.adapter,

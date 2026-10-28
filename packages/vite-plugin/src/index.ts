@@ -1,10 +1,172 @@
-﻿/**
+/**
  * @agent-feedback/vite-plugin
  * In-App Agent Feedback Bridge - Zero-Code Bundler Plugin & DevServer Middleware
  */
 
 import fs from 'node:fs';
 import path from 'node:path';
+import type {
+  InAppFeedback,
+  FeedbackDateIndex,
+  FeedbackStatus,
+  FeedbackType,
+  FeedbackTheme
+} from '@agent-feedback/core';
+
+/**
+ * 获取本地 YYYY-MM-DD 日期字符串
+ */
+export function getLocalDateString(d: Date | number | string = new Date()): string {
+  const dateObj = typeof d === 'object' && d instanceof Date ? d : new Date(d);
+  if (isNaN(dateObj.getTime())) {
+    const fallback = new Date();
+    return `${fallback.getFullYear()}-${String(fallback.getMonth() + 1).padStart(2, '0')}-${String(fallback.getDate()).padStart(2, '0')}`;
+  }
+  const year = dateObj.getFullYear();
+  const month = String(dateObj.getMonth() + 1).padStart(2, '0');
+  const day = String(dateObj.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
+
+/**
+ * 读取日级索引文件
+ */
+export function readIndex(feedbackDir: string): FeedbackDateIndex {
+  const indexFile = path.resolve(feedbackDir, 'feedback_index.json');
+  if (fs.existsSync(indexFile)) {
+    try {
+      const parsed = JSON.parse(fs.readFileSync(indexFile, 'utf-8'));
+      if (Array.isArray(parsed?.dates)) {
+        return parsed;
+      }
+    } catch {}
+  }
+  return rebuildIndex(feedbackDir);
+}
+
+/**
+ * 写入日级索引文件
+ */
+export function writeIndex(feedbackDir: string, index: FeedbackDateIndex): void {
+  const indexFile = path.resolve(feedbackDir, 'feedback_index.json');
+  fs.writeFileSync(indexFile, JSON.stringify(index, null, 2), 'utf-8');
+}
+
+/**
+ * 读取指定日期的分片文件
+ */
+export function readShard(feedbackDir: string, date: string): InAppFeedback[] {
+  const shardFile = path.resolve(feedbackDir, `feedback_${date}.json`);
+  if (fs.existsSync(shardFile)) {
+    try {
+      const content = fs.readFileSync(shardFile, 'utf-8');
+      const parsed = JSON.parse(content);
+      if (Array.isArray(parsed)) {
+        return parsed;
+      }
+    } catch {}
+  }
+  return [];
+}
+
+/**
+ * 写入指定日期的分片文件
+ */
+export function writeShard(feedbackDir: string, date: string, items: InAppFeedback[]): void {
+  const shardFile = path.resolve(feedbackDir, `feedback_${date}.json`);
+  fs.writeFileSync(shardFile, JSON.stringify(items, null, 2), 'utf-8');
+}
+
+/**
+ * 重新扫描分片目录并重建索引文件
+ */
+export function rebuildIndex(feedbackDir: string): FeedbackDateIndex {
+  if (!fs.existsSync(feedbackDir)) {
+    return { dates: [], totalCount: 0, updatedAt: new Date().toISOString() };
+  }
+  const files = fs.readdirSync(feedbackDir);
+  const shardFiles = files.filter(f => f.startsWith('feedback_') && f.endsWith('.json') && f !== 'feedback_index.json' && f !== 'feedback_queue.json');
+  const dates: string[] = [];
+  let totalCount = 0;
+
+  for (const file of shardFiles) {
+    const match = file.match(/^feedback_(\d{4}-\d{2}-\d{2})\.json$/);
+    if (match) {
+      const date = match[1];
+      dates.push(date);
+      const items = readShard(feedbackDir, date);
+      totalCount += items.length;
+    }
+  }
+
+  dates.sort((a, b) => b.localeCompare(a));
+  const index: FeedbackDateIndex = {
+    dates,
+    totalCount,
+    updatedAt: new Date().toISOString()
+  };
+  writeIndex(feedbackDir, index);
+  return index;
+}
+
+/**
+ * 向后兼容：将旧的 feedback_queue.json 自动迁移并合并到按天分片中
+ */
+export function migrateLegacyQueue(feedbackDir: string): void {
+  const queueFile = path.resolve(feedbackDir, 'feedback_queue.json');
+  if (!fs.existsSync(queueFile)) return;
+
+  try {
+    const raw = fs.readFileSync(queueFile, 'utf-8');
+    const items = JSON.parse(raw);
+    if (!Array.isArray(items) || items.length === 0) return;
+
+    const dateMap = new Map<string, InAppFeedback[]>();
+    for (const item of items) {
+      const itemDate = item.date || getLocalDateString(item.receivedAt || item.timestamp);
+      item.date = itemDate;
+      item.type = item.type || 'user_feedback';
+
+      if (!dateMap.has(itemDate)) {
+        dateMap.set(itemDate, []);
+      }
+      dateMap.get(itemDate)!.push(item);
+    }
+
+    for (const [date, newItems] of dateMap.entries()) {
+      const shardItems = readShard(feedbackDir, date);
+      const existingIds = new Set(shardItems.map(i => i.id));
+      for (const it of newItems) {
+        if (!existingIds.has(it.id)) {
+          shardItems.push(it);
+          existingIds.add(it.id);
+        }
+      }
+      shardItems.sort((a, b) => b.id - a.id);
+      writeShard(feedbackDir, date, shardItems);
+    }
+
+    rebuildIndex(feedbackDir);
+  } catch {
+    // 忽略损坏的旧队列
+  }
+}
+
+/**
+ * 同步将分片所有数据汇总至 feedback_queue.json，保证向下兼容
+ */
+export function syncLegacyQueue(feedbackDir: string): void {
+  try {
+    const index = readIndex(feedbackDir);
+    const allItems: InAppFeedback[] = [];
+    for (const date of index.dates) {
+      allItems.push(...readShard(feedbackDir, date));
+    }
+    allItems.sort((a, b) => b.id - a.id);
+    const queueFile = path.resolve(feedbackDir, 'feedback_queue.json');
+    fs.writeFileSync(queueFile, JSON.stringify(allItems, null, 2), 'utf-8');
+  } catch {}
+}
 
 /**
  * 插件配置项
@@ -21,6 +183,17 @@ export interface AgentFeedbackPluginOptions {
    * 默认 '.agent/feedback'
    */
   storageDir?: string;
+
+  /**
+   * 默认主题：dark | light | auto
+   * 默认 'dark'
+   */
+  theme?: FeedbackTheme;
+
+  /**
+   * 主题主色 (Primary Color)，如 '#4edea3' 或 '#2563eb'
+   */
+  primaryColor?: string;
 }
 
 /**
@@ -46,6 +219,8 @@ export type Plugin = AgentFeedbackPlugin;
 export function agentFeedback(options: AgentFeedbackPluginOptions = {}): AgentFeedbackPlugin {
   let isDev = true;
   const storageRelDir = options.storageDir || '.agent/feedback';
+  const defaultTheme: FeedbackTheme = options.theme || 'dark';
+  const primaryColor = options.primaryColor;
 
   return {
     name: 'agent-feedback-plugin',
@@ -63,13 +238,15 @@ export function agentFeedback(options: AgentFeedbackPluginOptions = {}): AgentFe
 
       const projectRoot = server?.config?.root || process.cwd();
       const feedbackDir = path.resolve(projectRoot, storageRelDir);
-      const queueFile = path.resolve(feedbackDir, 'feedback_queue.json');
       const screenshotsDir = path.resolve(feedbackDir, 'screenshots');
 
       // 确保本地持久化存储目录存在
       if (!fs.existsSync(feedbackDir)) {
         fs.mkdirSync(feedbackDir, { recursive: true });
       }
+
+      // 向后兼容迁移：启动时自动将 feedback_queue.json 迁移合并到分片中
+      migrateLegacyQueue(feedbackDir);
 
       // 自动检查与配置根目录 .gitignore，确保 .agent/ 敏感数据与截图不被意外提交
       const gitignorePath = path.resolve(projectRoot, '.gitignore');
@@ -132,6 +309,12 @@ export function agentFeedback(options: AgentFeedbackPluginOptions = {}): AgentFe
                 if (!data.status) {
                   data.status = 'pending';
                 }
+                if (!data.type) {
+                  data.type = 'user_feedback';
+                }
+                if (!data.date) {
+                  data.date = getLocalDateString(data.timestamp);
+                }
 
                 // 处理并转存截图文件
                 const rawScreenshots: string[] = [];
@@ -182,22 +365,13 @@ export function agentFeedback(options: AgentFeedbackPluginOptions = {}): AgentFe
                   }
                 }
 
-                // 读取并追加至本地队列
-                let history: any[] = [];
-                if (fs.existsSync(queueFile)) {
-                  try {
-                    const content = fs.readFileSync(queueFile, 'utf-8');
-                    const parsed = JSON.parse(content);
-                    if (Array.isArray(parsed)) {
-                      history = parsed;
-                    }
-                  } catch {
-                    history = [];
-                  }
-                }
-
-                history.unshift(data);
-                fs.writeFileSync(queueFile, JSON.stringify(history, null, 2), 'utf-8');
+                // 持久化至当天分片并更新索引
+                const today = data.date;
+                const shardItems = readShard(feedbackDir, today);
+                shardItems.unshift(data);
+                writeShard(feedbackDir, today, shardItems);
+                rebuildIndex(feedbackDir);
+                syncLegacyQueue(feedbackDir);
 
                 res.setHeader('Content-Type', 'application/json');
                 res.statusCode = 200;
@@ -211,25 +385,152 @@ export function agentFeedback(options: AgentFeedbackPluginOptions = {}): AgentFe
             return;
           }
 
-          // 2. 获取反馈历史端点: GET /api/__agent_feedback/list
+          // 2. 提交系统通知端点: POST /api/__agent_feedback/notice
+          if (req.method === 'POST' && urlPath === '/api/__agent_feedback/notice') {
+            let body = '';
+            req.on('data', (chunk: any) => {
+              body += chunk;
+            });
+
+            req.on('end', () => {
+              try {
+                const data = body ? JSON.parse(body) : {};
+                const now = Date.now();
+                const noticeItem: InAppFeedback = {
+                  id: data.id || now,
+                  type: 'agent_notice',
+                  status: 'completed',
+                  content: data.content || data.message || '系统通知',
+                  receivedAt: data.receivedAt || new Date(now).toISOString(),
+                  timestamp: data.timestamp || now,
+                  date: data.date || getLocalDateString(data.timestamp || now),
+                  reply: data.reply || '系统主动推送的 Agent 通知',
+                  telemetry: data.telemetry || {
+                    route: 'cli',
+                    viewport: { width: 0, height: 0, dpr: 1 },
+                    userAgent: '@agent-feedback/vite-plugin',
+                    platform: 'desktop'
+                  }
+                };
+
+                const today = noticeItem.date!;
+                const shardItems = readShard(feedbackDir, today);
+                shardItems.unshift(noticeItem);
+                writeShard(feedbackDir, today, shardItems);
+                rebuildIndex(feedbackDir);
+                syncLegacyQueue(feedbackDir);
+
+                res.setHeader('Content-Type', 'application/json');
+                res.statusCode = 200;
+                res.end(JSON.stringify({ success: true, id: noticeItem.id, item: noticeItem }));
+              } catch (err: any) {
+                res.statusCode = 500;
+                res.setHeader('Content-Type', 'application/json');
+                res.end(JSON.stringify({ error: err?.message || 'Failed to parse notice payload' }));
+              }
+            });
+            return;
+          }
+
+          // 3. 日级索引端点: GET /api/__agent_feedback/dates
+          if (req.method === 'GET' && urlPath === '/api/__agent_feedback/dates') {
+            res.setHeader('Content-Type', 'application/json');
+            res.statusCode = 200;
+            const index = readIndex(feedbackDir);
+            const latestDate = index.dates.length > 0 ? index.dates[0] : '';
+            res.end(JSON.stringify({
+              dates: index.dates,
+              totalCount: index.totalCount,
+              latestDate
+            }));
+            return;
+          }
+
+          // 4. 获取反馈历史端点: GET /api/__agent_feedback/list
           if (req.method === 'GET' && urlPath === '/api/__agent_feedback/list') {
             res.setHeader('Content-Type', 'application/json');
             res.statusCode = 200;
-            if (fs.existsSync(queueFile)) {
-              try {
-                const content = fs.readFileSync(queueFile, 'utf-8');
-                JSON.parse(content); // 验证 JSON 格式有效性
-                res.end(content);
-              } catch {
-                res.end(JSON.stringify([]));
-              }
+
+            const urlObj = new URL(rawUrl, 'http://localhost');
+            const dateParam = urlObj.searchParams.get('date');
+
+            if (dateParam) {
+              // 指定了 date 参数：返回该日分片列表
+              const shardList = readShard(feedbackDir, dateParam);
+              res.end(JSON.stringify(shardList));
+              return;
+            }
+
+            // 未传 date：返回最新一天的工单列表以保持 API 兼容
+            const index = readIndex(feedbackDir);
+            if (index.dates.length > 0) {
+              const latestShard = readShard(feedbackDir, index.dates[0]);
+              res.end(JSON.stringify(latestShard));
             } else {
               res.end(JSON.stringify([]));
             }
             return;
           }
 
-          // 3. 静态服务截图文件: GET /api/__agent_feedback/screenshots/<filename>
+          // 5. 跨分片更新状态: POST /api/__agent_feedback/status
+          if (req.method === 'POST' && urlPath === '/api/__agent_feedback/status') {
+            let body = '';
+            req.on('data', (chunk: any) => {
+              body += chunk;
+            });
+
+            req.on('end', () => {
+              try {
+                const data = body ? JSON.parse(body) : {};
+                const id = data.id !== undefined ? Number(data.id) : NaN;
+                const status: FeedbackStatus = data.status;
+                const reply = data.reply;
+
+                if (isNaN(id) || !status) {
+                  res.statusCode = 400;
+                  res.setHeader('Content-Type', 'application/json');
+                  res.end(JSON.stringify({ error: 'Missing required id or status parameter' }));
+                  return;
+                }
+
+                const index = readIndex(feedbackDir);
+                let updatedItem: InAppFeedback | null = null;
+
+                for (const date of index.dates) {
+                  const shardItems = readShard(feedbackDir, date);
+                  const target = shardItems.find(i => i.id === id);
+                  if (target) {
+                    target.status = status;
+                    if (reply !== undefined) {
+                      target.reply = reply;
+                    }
+                    target.updatedAt = new Date().toISOString();
+                    writeShard(feedbackDir, date, shardItems);
+                    updatedItem = target;
+                    break;
+                  }
+                }
+
+                if (updatedItem) {
+                  syncLegacyQueue(feedbackDir);
+                  res.setHeader('Content-Type', 'application/json');
+                  res.statusCode = 200;
+                  res.end(JSON.stringify({ success: true, item: updatedItem }));
+                } else {
+                  res.statusCode = 404;
+                  res.setHeader('Content-Type', 'application/json');
+                  res.end(JSON.stringify({ error: `Feedback item with id ${id} not found` }));
+                }
+              } catch (err: any) {
+                res.statusCode = 500;
+                res.setHeader('Content-Type', 'application/json');
+                res.end(JSON.stringify({ error: err?.message || 'Failed to update feedback status' }));
+              }
+            });
+            return;
+          }
+
+          // 6. 静态服务截图文件: GET /api/__agent_feedback/screenshots/<filename>
           if (req.method === 'GET' && urlPath.startsWith('/api/__agent_feedback/screenshots/')) {
             const fileName = path.basename(urlPath);
             const filePath = path.resolve(screenshotsDir, fileName);
@@ -279,8 +580,16 @@ export function agentFeedback(options: AgentFeedbackPluginOptions = {}): AgentFe
 
     load(id: string) {
       if (id === '\0agent-feedback-client-virtual') {
-        // 输出虚拟客户端代码，驱动 Shadow DOM 自定义元素注册与挂载
+        const themeLiteral = JSON.stringify(defaultTheme);
+        const colorLiteral = primaryColor ? JSON.stringify(primaryColor) : 'undefined';
+        // 输出虚拟客户端代码，驱动 Shadow DOM 自定义元素注册、主题透传与挂载
         return `
+if (typeof window !== 'undefined') {
+  (window as any).__AGENT_FEEDBACK_OPTIONS__ = {
+    theme: ${themeLiteral},
+    primaryColor: ${colorLiteral}
+  };
+}
 import '@agent-feedback/client';
 console.log('[Agent Feedback Bridge] In-App nervous system initialized.');
         `.trim();

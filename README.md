@@ -1,4 +1,4 @@
-﻿# Agent Feedback Bridge (@agent-feedback)
+# Agent Feedback Bridge (@agent-feedback)
 
 > **The In-App Nervous System & Live Loop for AI Coding Agents**
 > 面向 AI Coding Agent 时代的端侧神经系统与自愈闭环桥梁

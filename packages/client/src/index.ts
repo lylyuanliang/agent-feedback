@@ -1,4 +1,4 @@
-﻿/**
+/**
  * @agent-feedback/client
  * In-App Agent Feedback Bridge - Shadow DOM Web Component & Telemetry Client
  */
@@ -8,16 +8,52 @@ import type {
   ConsoleLogEntry,
   TelemetrySnapshot,
   PlatformType,
-  FeedbackStatus
-} from '../../core/src/index.ts';
+  FeedbackStatus,
+  FeedbackTheme,
+  FeedbackExtensionTab,
+  ExtensionContext
+} from '@agent-feedback/core';
 
 export type {
   InAppFeedback,
   ConsoleLogEntry,
   TelemetrySnapshot,
   PlatformType,
-  FeedbackStatus
+  FeedbackStatus,
+  FeedbackTheme,
+  FeedbackExtensionTab,
+  ExtensionContext
 };
+
+// 全局扩展槽注册表
+if (typeof window !== 'undefined') {
+  (window as any).__AGENT_FEEDBACK_EXTENSIONS__ = (window as any).__AGENT_FEEDBACK_EXTENSIONS__ || [];
+}
+
+/**
+ * 注册自定义扩展 Tab
+ */
+export function registerExtensionTab(tab: FeedbackExtensionTab): void {
+  if (typeof window === 'undefined') return;
+  const list: FeedbackExtensionTab[] = (window as any).__AGENT_FEEDBACK_EXTENSIONS__ || [];
+  const idx = list.findIndex(t => t.id === tab.id);
+  if (idx >= 0) {
+    list[idx] = tab;
+  } else {
+    list.push(tab);
+  }
+  (window as any).__AGENT_FEEDBACK_EXTENSIONS__ = list;
+
+  // 通知页面上已挂载的组件刷新
+  if (typeof document !== 'undefined' && typeof document.querySelectorAll === 'function') {
+    const widgets = document.querySelectorAll('agent-feedback-widget');
+    widgets.forEach((w: any) => {
+      if (typeof w.refreshWidget === 'function') {
+        w.refreshWidget();
+      }
+    });
+  }
+}
 
 // 内存中的控制台日志环形缓冲区 (最大 30 条)
 const MAX_LOGS = 30;
@@ -203,11 +239,9 @@ export async function captureScreenshot(): Promise<string | null> {
     const ctx = canvas.getContext('2d');
     if (!ctx) return null;
 
-    // 暗黑 Obsidian 背景兜底
     ctx.fillStyle = '#12151c';
     ctx.fillRect(0, 0, width, height);
 
-    // 绘制简要 DOM 结构投影
     const docClone = document.documentElement.cloneNode(true) as HTMLElement;
     const widgetInClone = docClone.querySelector('agent-feedback-widget');
     if (widgetInClone) {
@@ -260,9 +294,37 @@ const CustomElementBase: { new (): HTMLElement } =
  * 采用 Open Shadow DOM 实现 100% Scoped CSS 样式隔离
  */
 export class AgentFeedbackWidget extends CustomElementBase {
+  private static globalTheme: FeedbackTheme = 'dark';
+
+  /**
+   * 静态方法：全局切换主题
+   */
+  public static setTheme(theme: FeedbackTheme): void {
+    AgentFeedbackWidget.globalTheme = theme;
+    if (typeof document !== 'undefined' && typeof document.querySelectorAll === 'function') {
+      const widgets = document.querySelectorAll('agent-feedback-widget');
+      widgets.forEach((w: any) => {
+        if (typeof w.setAttribute === 'function') {
+          w.setAttribute('theme', theme);
+        }
+      });
+    }
+  }
+
+  /**
+   * 静态方法：获取当前主题
+   */
+  public static getTheme(): FeedbackTheme {
+    return AgentFeedbackWidget.globalTheme;
+  }
+
+  static get observedAttributes() {
+    return ['theme'];
+  }
+
   public shadow: ShadowRoot;
   private isOpen = false;
-  private activeTab: 'submit' | 'history' = 'submit';
+  private activeTab: string = 'submit';
   private hasProcessingItems = false;
 
   // 拖拽与磁吸边缘贴靠状态
@@ -281,9 +343,16 @@ export class AgentFeedbackWidget extends CustomElementBase {
   private isSubmitting = false;
   private submitFeedbackMessage: { type: 'success' | 'error'; text: string } | null = null;
 
-  // 历史列表状态
+  // 历史时间轴状态
+  private datesList: string[] = [];
+  private loadedDates: Map<string, InAppFeedback[]> = new Map();
+  private currentDateIndex = 0;
+  private totalTicketsCount = 0;
   private historyList: InAppFeedback[] = [];
   private isLoadingHistory = false;
+
+  // 扩展槽生命周期清理钩子
+  private extensionCleanups: Map<string, () => void> = new Map();
 
   constructor() {
     super();
@@ -294,14 +363,51 @@ export class AgentFeedbackWidget extends CustomElementBase {
     }
   }
 
+  attributeChangedCallback(name: string, oldValue: string, newValue: string) {
+    if (name === 'theme' && oldValue !== newValue) {
+      this.render();
+      this.bindEvents();
+    }
+  }
+
   connectedCallback() {
+    // 初始化主题
+    const injectedOptions = typeof window !== 'undefined' ? (window as any).__AGENT_FEEDBACK_OPTIONS__ : undefined;
+    const initialTheme: FeedbackTheme =
+      (this.getAttribute?.('theme') as FeedbackTheme) ||
+      injectedOptions?.theme ||
+      AgentFeedbackWidget.globalTheme ||
+      'dark';
+
+    if (this.setAttribute && !this.getAttribute?.('theme')) {
+      this.setAttribute('theme', initialTheme);
+    }
+
+    if (injectedOptions?.primaryColor && (this as any).style) {
+      (this as any).style.setProperty('--af-primary', injectedOptions.primaryColor);
+    }
+
     this.render();
     this.bindEvents();
     this.fetchHistoryQuickStatus();
   }
 
   disconnectedCallback() {
-    // 卸载监听
+    this.cleanupExtensionTabs();
+  }
+
+  public refreshWidget() {
+    this.render();
+    this.bindEvents();
+  }
+
+  private cleanupExtensionTabs() {
+    for (const cleanup of this.extensionCleanups.values()) {
+      try {
+        cleanup();
+      } catch {}
+    }
+    this.extensionCleanups.clear();
   }
 
   /**
@@ -327,12 +433,12 @@ export class AgentFeedbackWidget extends CustomElementBase {
    * 刷新呼吸灯显示
    */
   private updatePillIndicator() {
-    const dot = this.shadow?.querySelector('.pill-dot');
+    const dot = this.shadow?.querySelector?.('.pill-dot');
     if (dot) {
       if (this.hasProcessingItems) {
-        dot.classList.add('pulsing');
+        dot.classList?.add('pulsing');
       } else {
-        dot.classList.remove('pulsing');
+        dot.classList?.remove('pulsing');
       }
     }
   }
@@ -354,7 +460,8 @@ export class AgentFeedbackWidget extends CustomElementBase {
   /**
    * 切换 Tab
    */
-  public setTab(tab: 'submit' | 'history') {
+  public setTab(tab: string) {
+    this.cleanupExtensionTabs();
     this.activeTab = tab;
     this.submitFeedbackMessage = null;
     this.render();
@@ -365,7 +472,7 @@ export class AgentFeedbackWidget extends CustomElementBase {
   }
 
   /**
-   * 加载反馈历史记录
+   * 加载历史时间轴数据
    */
   public async loadHistory() {
     if (typeof fetch === 'undefined') return;
@@ -374,16 +481,71 @@ export class AgentFeedbackWidget extends CustomElementBase {
     this.bindEvents();
 
     try {
-      const res = await fetch('/api/__agent_feedback/list');
+      // 1. 获取日级索引
+      try {
+        const datesRes = await fetch('/api/__agent_feedback/dates');
+        if (datesRes.ok) {
+          const datesData = await datesRes.json();
+          this.datesList = Array.isArray(datesData?.dates) ? datesData.dates : [];
+          this.totalTicketsCount = typeof datesData?.totalCount === 'number' ? datesData.totalCount : 0;
+        }
+      } catch {}
+
+      // 2. 加载首屏数据 (最新一天工单)
+      const query = this.datesList.length > 0 ? `?date=${encodeURIComponent(this.datesList[0])}` : '';
+      const res = await fetch(`/api/__agent_feedback/list${query}`);
       if (res.ok) {
         const data = await res.json();
-        this.historyList = Array.isArray(data) ? data : data.list || [];
-        this.hasProcessingItems = this.historyList.some(i => i.status === 'processing' || i.status === 'pending');
+        const list: InAppFeedback[] = Array.isArray(data) ? data : data.list || [];
+        this.loadedDates.clear();
+        this.currentDateIndex = 0;
+
+        if (this.datesList.length > 0) {
+          this.loadedDates.set(this.datesList[0], list);
+        } else if (list.length > 0) {
+          // 兜底：直接按条目内部 date 分组
+          for (const item of list) {
+            const d = item.date || (item.receivedAt ? item.receivedAt.slice(0, 10) : '今日');
+            if (!this.loadedDates.has(d)) this.loadedDates.set(d, []);
+            this.loadedDates.get(d)!.push(item);
+          }
+        }
+
+        this.historyList = list;
+        this.hasProcessingItems = list.some(i => i.status === 'processing' || i.status === 'pending');
+        if (this.totalTicketsCount === 0) {
+          this.totalTicketsCount = list.length;
+        }
       }
     } catch (err: any) {
       console.warn('[agent-feedback] Failed to load history:', err);
     } finally {
       this.isLoadingHistory = false;
+      this.render();
+      this.bindEvents();
+    }
+  }
+
+  /**
+   * 加载前一天历史记录
+   */
+  public async loadPreviousDay() {
+    if (typeof fetch === 'undefined') return;
+    if (this.currentDateIndex + 1 >= this.datesList.length) return;
+
+    this.currentDateIndex++;
+    const prevDate = this.datesList[this.currentDateIndex];
+    try {
+      const res = await fetch(`/api/__agent_feedback/list?date=${encodeURIComponent(prevDate)}`);
+      if (res.ok) {
+        const list: InAppFeedback[] = await res.json();
+        if (Array.isArray(list)) {
+          this.loadedDates.set(prevDate, list);
+        }
+      }
+    } catch (err: any) {
+      console.warn('[agent-feedback] Failed to load previous day:', err);
+    } finally {
       this.render();
       this.bindEvents();
     }
@@ -411,6 +573,7 @@ export class AgentFeedbackWidget extends CustomElementBase {
       const consoleLogs = getRecentLogs();
       const payload: Partial<InAppFeedback> = {
         id: Date.now(),
+        type: 'user_feedback',
         timestamp: Date.now(),
         receivedAt: new Date().toISOString(),
         content,
@@ -431,7 +594,6 @@ export class AgentFeedbackWidget extends CustomElementBase {
         throw new Error(errJson.message || `HTTP ${res.status}`);
       }
 
-      // 提交成功，清空输入并提示
       this.feedbackContent = '';
       this.attachedScreenshot = null;
       this.submitFeedbackMessage = {
@@ -471,7 +633,7 @@ export class AgentFeedbackWidget extends CustomElementBase {
     if (!this.shadow) return;
 
     // 1. 胶囊按钮点击与拖拽
-    const pill = this.shadow.querySelector('.pill-trigger') as HTMLElement;
+    const pill = this.shadow.querySelector?.('.pill-trigger') as HTMLElement;
     if (pill) {
       const onPointerDown = (e: PointerEvent | MouseEvent | TouchEvent) => {
         this.isDragging = true;
@@ -483,11 +645,11 @@ export class AgentFeedbackWidget extends CustomElementBase {
         this.startPointerX = clientX;
         this.startPointerY = clientY;
 
-        const rect = pill.getBoundingClientRect();
+        const rect = pill.getBoundingClientRect ? pill.getBoundingClientRect() : { left: 0, top: 0, width: 100, height: 40 };
         this.initialLeft = rect.left;
         this.initialTop = rect.top;
 
-        pill.style.transition = 'none';
+        if (pill.style) pill.style.transition = 'none';
 
         const onPointerMove = (moveEvent: PointerEvent | MouseEvent | TouchEvent) => {
           if (!this.isDragging) return;
@@ -507,17 +669,18 @@ export class AgentFeedbackWidget extends CustomElementBase {
           const winW = typeof window !== 'undefined' ? window.innerWidth : 400;
           const winH = typeof window !== 'undefined' ? window.innerHeight : 800;
 
-          // 限制在可视区域内
           newLeft = Math.max(10, Math.min(winW - rect.width - 10, newLeft));
           newTop = Math.max(10, Math.min(winH - rect.height - 10, newTop));
 
           this.currentLeft = newLeft;
           this.currentTop = newTop;
 
-          pill.style.left = `${newLeft}px`;
-          pill.style.top = `${newTop}px`;
-          pill.style.right = 'auto';
-          pill.style.bottom = 'auto';
+          if (pill.style) {
+            pill.style.left = `${newLeft}px`;
+            pill.style.top = `${newTop}px`;
+            pill.style.right = 'auto';
+            pill.style.bottom = 'auto';
+          }
         };
 
         const onPointerUp = () => {
@@ -525,44 +688,42 @@ export class AgentFeedbackWidget extends CustomElementBase {
           this.isDragging = false;
 
           if (typeof window !== 'undefined') {
-            window.removeEventListener('pointermove', onPointerMove as any);
-            window.removeEventListener('pointerup', onPointerUp as any);
-            window.removeEventListener('mousemove', onPointerMove as any);
-            window.removeEventListener('mouseup', onPointerUp as any);
-            window.removeEventListener('touchmove', onPointerMove as any);
-            window.removeEventListener('touchend', onPointerUp as any);
+            window.removeEventListener?.('pointermove', onPointerMove as any);
+            window.removeEventListener?.('pointerup', onPointerUp as any);
+            window.removeEventListener?.('mousemove', onPointerMove as any);
+            window.removeEventListener?.('mouseup', onPointerUp as any);
+            window.removeEventListener?.('touchmove', onPointerMove as any);
+            window.removeEventListener?.('touchend', onPointerUp as any);
           }
 
           if (!this.dragThresholdMoved) {
-            // 轻点触发展开
             this.toggleModal();
             return;
           }
 
-          // 磁吸边缘贴靠逻辑
-          pill.style.transition = 'left 0.3s cubic-bezier(0.2, 0.9, 0.4, 1.1)';
-          const winW = typeof window !== 'undefined' ? window.innerWidth : 400;
-          const centerX = (this.currentLeft ?? this.initialLeft) + rect.width / 2;
+          if (pill.style) {
+            pill.style.transition = 'left 0.3s cubic-bezier(0.2, 0.9, 0.4, 1.1)';
+            const winW = typeof window !== 'undefined' ? window.innerWidth : 400;
+            const centerX = (this.currentLeft ?? this.initialLeft) + rect.width / 2;
 
-          if (centerX < winW / 2) {
-            // 吸附左侧
-            this.currentLeft = 16;
-            pill.style.left = '16px';
-          } else {
-            // 吸附右侧
-            const rightSnap = winW - rect.width - 16;
-            this.currentLeft = rightSnap;
-            pill.style.left = `${rightSnap}px`;
+            if (centerX < winW / 2) {
+              this.currentLeft = 16;
+              pill.style.left = '16px';
+            } else {
+              const rightSnap = winW - rect.width - 16;
+              this.currentLeft = rightSnap;
+              pill.style.left = `${rightSnap}px`;
+            }
           }
         };
 
         if (typeof window !== 'undefined') {
-          window.addEventListener('pointermove', onPointerMove as any);
-          window.addEventListener('pointerup', onPointerUp as any);
-          window.addEventListener('mousemove', onPointerMove as any);
-          window.addEventListener('mouseup', onPointerUp as any);
-          window.addEventListener('touchmove', onPointerMove as any);
-          window.addEventListener('touchend', onPointerUp as any);
+          window.addEventListener?.('pointermove', onPointerMove as any);
+          window.addEventListener?.('pointerup', onPointerUp as any);
+          window.addEventListener?.('mousemove', onPointerMove as any);
+          window.addEventListener?.('mouseup', onPointerUp as any);
+          window.addEventListener?.('touchmove', onPointerMove as any);
+          window.addEventListener?.('touchend', onPointerUp as any);
         }
       };
 
@@ -571,49 +732,87 @@ export class AgentFeedbackWidget extends CustomElementBase {
       pill.onmousedown = onPointerDown as any;
     }
 
-    // 2. 模态框内部按钮
-    const closeBtn = this.shadow.querySelector('.modal-close');
+    // 2. 模态框内部基础按钮
+    const closeBtn = this.shadow.querySelector?.('.modal-close');
     if (closeBtn) {
-      closeBtn.addEventListener('click', () => this.toggleModal(false));
+      closeBtn.addEventListener?.('click', () => this.toggleModal(false));
     }
 
-    const backdrop = this.shadow.querySelector('.modal-backdrop');
+    const backdrop = this.shadow.querySelector?.('.modal-backdrop');
     if (backdrop) {
-      backdrop.addEventListener('click', (e) => {
+      backdrop.addEventListener?.('click', (e: any) => {
         if (e.target === backdrop) this.toggleModal(false);
       });
     }
 
-    const tabSubmit = this.shadow.querySelector('.tab-btn-submit');
+    // 3. Tab 切换 (基础 Tab)
+    const tabSubmit = this.shadow.querySelector?.('.tab-btn-submit');
     if (tabSubmit) {
-      tabSubmit.addEventListener('click', () => this.setTab('submit'));
+      tabSubmit.addEventListener?.('click', () => this.setTab('submit'));
     }
 
-    const tabHistory = this.shadow.querySelector('.tab-btn-history');
+    const tabHistory = this.shadow.querySelector?.('.tab-btn-history');
     if (tabHistory) {
-      tabHistory.addEventListener('click', () => this.setTab('history'));
+      tabHistory.addEventListener?.('click', () => this.setTab('history'));
     }
 
-    const textarea = this.shadow.querySelector('.feedback-textarea') as HTMLTextAreaElement;
+    // 4. 自定义扩展 Tab 按钮监听
+    const extensions: FeedbackExtensionTab[] =
+      typeof window !== 'undefined' ? (window as any).__AGENT_FEEDBACK_EXTENSIONS__ || [] : [];
+    for (const ext of extensions) {
+      const extBtn = this.shadow.querySelector?.(`.tab-btn-${ext.id}`);
+      if (extBtn) {
+        extBtn.addEventListener?.('click', () => this.setTab(ext.id));
+      }
+    }
+
+    // 5. 渲染当前自定义扩展 Tab 内容
+    if (this.activeTab !== 'submit' && this.activeTab !== 'history') {
+      const currentExt = extensions.find(e => e.id === this.activeTab);
+      const container = this.shadow.querySelector?.(`.ext-tab-container[data-tab-id="${this.activeTab}"]`) as HTMLElement;
+      if (currentExt && container) {
+        try {
+          const context: ExtensionContext = {
+            closeModal: () => this.toggleModal(false),
+            openTab: (id: string) => this.setTab(id),
+            theme: this.getAttribute?.('theme') || 'dark'
+          };
+          const cleanup = currentExt.render(container, context);
+          if (typeof cleanup === 'function') {
+            this.extensionCleanups.set(currentExt.id, cleanup);
+          }
+        } catch (err) {
+          console.error(`[agent-feedback] Error rendering extension tab ${currentExt.id}:`, err);
+        }
+      }
+    }
+
+    // 6. 表单输入与提交
+    const textarea = this.shadow.querySelector?.('.feedback-textarea') as HTMLTextAreaElement;
     if (textarea) {
-      textarea.addEventListener('input', () => {
+      textarea.addEventListener?.('input', () => {
         this.feedbackContent = textarea.value;
       });
     }
 
-    const submitBtn = this.shadow.querySelector('.btn-submit');
+    const submitBtn = this.shadow.querySelector?.('.btn-submit');
     if (submitBtn) {
-      submitBtn.addEventListener('click', () => this.submitFeedback());
+      submitBtn.addEventListener?.('click', () => this.submitFeedback());
     }
 
-    const refreshHistoryBtn = this.shadow.querySelector('.btn-refresh-history');
+    const refreshHistoryBtn = this.shadow.querySelector?.('.btn-refresh-history');
     if (refreshHistoryBtn) {
-      refreshHistoryBtn.addEventListener('click', () => this.loadHistory());
+      refreshHistoryBtn.addEventListener?.('click', () => this.loadHistory());
     }
 
-    const captureBtn = this.shadow.querySelector('.btn-capture-screen');
+    const loadPrevDayBtn = this.shadow.querySelector?.('.btn-load-previous-day');
+    if (loadPrevDayBtn) {
+      loadPrevDayBtn.addEventListener?.('click', () => this.loadPreviousDay());
+    }
+
+    const captureBtn = this.shadow.querySelector?.('.btn-capture-screen');
     if (captureBtn) {
-      captureBtn.addEventListener('click', async () => {
+      captureBtn.addEventListener?.('click', async () => {
         const shot = await captureScreenshot();
         if (shot) {
           this.attachedScreenshot = shot;
@@ -623,18 +822,18 @@ export class AgentFeedbackWidget extends CustomElementBase {
       });
     }
 
-    const removeShotBtn = this.shadow.querySelector('.btn-remove-shot');
+    const removeShotBtn = this.shadow.querySelector?.('.btn-remove-shot');
     if (removeShotBtn) {
-      removeShotBtn.addEventListener('click', () => {
+      removeShotBtn.addEventListener?.('click', () => {
         this.attachedScreenshot = null;
         this.render();
         this.bindEvents();
       });
     }
 
-    const fileInput = this.shadow.querySelector('.screenshot-file-input') as HTMLInputElement;
+    const fileInput = this.shadow.querySelector?.('.screenshot-file-input') as HTMLInputElement;
     if (fileInput) {
-      fileInput.addEventListener('change', () => {
+      fileInput.addEventListener?.('change', () => {
         if (fileInput.files && fileInput.files[0]) {
           const reader = new FileReader();
           reader.onload = (e) => {
@@ -668,6 +867,85 @@ export class AgentFeedbackWidget extends CustomElementBase {
   }
 
   /**
+   * 渲染单个工单卡片
+   */
+  private renderTicketCard(item: InAppFeedback): string {
+    const isNotice = item.type === 'agent_notice';
+    const cardClass = isNotice ? 'history-card card-agent-notice' : 'history-card';
+    const timeStr = item.receivedAt ? item.receivedAt.slice(11, 19) : '';
+
+    return `
+      <div class="${cardClass}">
+        <div class="card-header">
+          <span>#${item.id} · ${timeStr}</span>
+          ${
+            isNotice
+              ? `<span class="badge badge-notice">🤖 Agent 系统通知</span>`
+              : this.renderStatusBadge(item.status)
+          }
+        </div>
+        <div class="card-content">${item.content}</div>
+        ${
+          item.reply
+            ? `
+          <div class="agent-reply-box">
+            <div class="agent-reply-header">🤖 Agent 修复说明:</div>
+            <div>${item.reply}</div>
+          </div>
+        `
+            : ''
+        }
+      </div>
+    `;
+  }
+
+  /**
+   * 渲染时间轴视图
+   */
+  private renderTimelineView(): string {
+    if (this.isLoadingHistory) {
+      return `<div style="text-align: center; padding: 30px; color: var(--af-text-muted, #9ca3af);">正在获取进度...</div>`;
+    }
+
+    if (this.loadedDates.size === 0) {
+      return `<div class="empty-history">暂无反馈记录。点击“新建反馈”提交第一条反馈！</div>`;
+    }
+
+    const daySections: string[] = [];
+    for (const [date, items] of this.loadedDates.entries()) {
+      daySections.push(`
+        <div class="timeline-day-group">
+          <div class="timeline-day-header">
+            <span class="timeline-dot"></span>
+            <span class="timeline-date-title">${date}</span>
+            <span class="timeline-date-badge">当日共 ${items.length} 条</span>
+          </div>
+          <div class="timeline-day-content">
+            <div class="timeline-v-line"></div>
+            <div class="timeline-cards">
+              ${items.map(item => this.renderTicketCard(item)).join('')}
+            </div>
+          </div>
+        </div>
+      `);
+    }
+
+    const hasMore = this.currentDateIndex + 1 < this.datesList.length;
+    const nextDate = hasMore ? this.datesList[this.currentDateIndex + 1] : '';
+
+    return `
+      <div class="timeline-container">
+        ${daySections.join('')}
+        ${
+          hasMore
+            ? `<button class="btn-load-previous-day">📅 加载前一天记录 (${nextDate})</button>`
+            : ''
+        }
+      </div>
+    `;
+  }
+
+  /**
    * 渲染 Shadow DOM 全景 HTML 与 Scoped CSS
    */
   public render() {
@@ -675,8 +953,9 @@ export class AgentFeedbackWidget extends CustomElementBase {
 
     const telemetry = collectTelemetry();
     const logs = getRecentLogs();
+    const extensions: FeedbackExtensionTab[] =
+      typeof window !== 'undefined' ? (window as any).__AGENT_FEEDBACK_EXTENSIONS__ || [] : [];
 
-    // 维持拖拽吸附后的绝对坐标
     const pillPositionStyle =
       this.currentLeft !== null && this.currentTop !== null
         ? `left: ${this.currentLeft}px; top: ${this.currentTop}px; right: auto; bottom: auto;`
@@ -687,9 +966,56 @@ export class AgentFeedbackWidget extends CustomElementBase {
         :host {
           all: initial;
           font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
-          color: #e5e7eb;
+          --af-primary: #4edea3;
+          --af-bg-base: #12151c;
+          --af-bg-surface: #181f2a;
+          --af-text-main: #f3f4f6;
+          --af-text-muted: #9ca3af;
+          --af-border: rgba(255, 255, 255, 0.08);
+          --af-radius: 12px;
+          color: var(--af-text-main, #f3f4f6);
           line-height: 1.5;
           font-size: 14px;
+        }
+
+        :host([theme="light"]) {
+          --af-primary: #2563eb;
+          --af-bg-base: #ffffff;
+          --af-bg-surface: #f8fafc;
+          --af-text-main: #0f172a;
+          --af-text-muted: #64748b;
+          --af-border: rgba(0, 0, 0, 0.08);
+        }
+
+        :host([theme="dark"]) {
+          --af-primary: #4edea3;
+          --af-bg-base: #12151c;
+          --af-bg-surface: #181f2a;
+          --af-text-main: #f3f4f6;
+          --af-text-muted: #9ca3af;
+          --af-border: rgba(255, 255, 255, 0.08);
+        }
+
+        @media (prefers-color-scheme: light) {
+          :host([theme="auto"]) {
+            --af-primary: #2563eb;
+            --af-bg-base: #ffffff;
+            --af-bg-surface: #f8fafc;
+            --af-text-main: #0f172a;
+            --af-text-muted: #64748b;
+            --af-border: rgba(0, 0, 0, 0.08);
+          }
+        }
+
+        @media (prefers-color-scheme: dark) {
+          :host([theme="auto"]) {
+            --af-primary: #4edea3;
+            --af-bg-base: #12151c;
+            --af-bg-surface: #181f2a;
+            --af-text-main: #f3f4f6;
+            --af-text-muted: #9ca3af;
+            --af-border: rgba(255, 255, 255, 0.08);
+          }
         }
 
         *, *::before, *::after {
@@ -698,7 +1024,7 @@ export class AgentFeedbackWidget extends CustomElementBase {
           padding: 0;
         }
 
-        /* 悬浮磁吸胶囊 (Obsidian Alpine Explorer 风格) */
+        /* 悬浮磁吸胶囊 */
         .pill-trigger {
           position: fixed;
           ${pillPositionStyle}
@@ -707,9 +1033,9 @@ export class AgentFeedbackWidget extends CustomElementBase {
           align-items: center;
           gap: 8px;
           padding: 8px 16px;
-          background: #12151c;
-          color: #4edea3;
-          border: 1px solid rgba(78, 222, 163, 0.4);
+          background: var(--af-bg-base, #12151c);
+          color: var(--af-primary, #4edea3);
+          border: 1px solid var(--af-primary, rgba(78, 222, 163, 0.4));
           border-radius: 9999px;
           box-shadow: 0 8px 24px rgba(0, 0, 0, 0.6), 0 0 12px rgba(78, 222, 163, 0.2);
           cursor: grab;
@@ -734,8 +1060,8 @@ export class AgentFeedbackWidget extends CustomElementBase {
           width: 8px;
           height: 8px;
           border-radius: 50%;
-          background: #4edea3;
-          box-shadow: 0 0 8px #4edea3;
+          background: var(--af-primary, #4edea3);
+          box-shadow: 0 0 8px var(--af-primary, #4edea3);
           flex-shrink: 0;
         }
 
@@ -765,9 +1091,9 @@ export class AgentFeedbackWidget extends CustomElementBase {
         }
 
         .modal-container {
-          background: #161922;
-          border: 1px solid #2a303c;
-          border-radius: 16px;
+          background: var(--af-bg-base, #161922);
+          border: 1px solid var(--af-border, #2a303c);
+          border-radius: var(--af-radius, 12px);
           box-shadow: 0 24px 48px rgba(0, 0, 0, 0.8);
           width: 100%;
           max-width: 480px;
@@ -789,14 +1115,14 @@ export class AgentFeedbackWidget extends CustomElementBase {
           align-items: center;
           justify-content: space-between;
           padding: 16px 20px;
-          border-bottom: 1px solid #222734;
-          background: #12151c;
+          border-bottom: 1px solid var(--af-border, #222734);
+          background: var(--af-bg-surface, #12151c);
         }
 
         .modal-title {
           font-size: 15px;
           font-weight: 700;
-          color: #f3f4f6;
+          color: var(--af-text-main, #f3f4f6);
           display: flex;
           align-items: center;
           gap: 8px;
@@ -805,7 +1131,7 @@ export class AgentFeedbackWidget extends CustomElementBase {
         .modal-close {
           background: transparent;
           border: none;
-          color: #9ca3af;
+          color: var(--af-text-muted, #9ca3af);
           font-size: 20px;
           line-height: 1;
           cursor: pointer;
@@ -814,32 +1140,37 @@ export class AgentFeedbackWidget extends CustomElementBase {
         }
 
         .modal-close:hover {
-          color: #fff;
+          color: var(--af-text-main, #fff);
           background: rgba(255, 255, 255, 0.1);
         }
 
         .tabs {
           display: flex;
-          background: #12151c;
-          border-bottom: 1px solid #222734;
+          background: var(--af-bg-surface, #12151c);
+          border-bottom: 1px solid var(--af-border, #222734);
           padding: 0 16px;
           gap: 12px;
+          overflow-x: auto;
         }
 
         .tab-btn {
           background: none;
           border: none;
-          color: #9ca3af;
+          color: var(--af-text-muted, #9ca3af);
           font-size: 13px;
           font-weight: 600;
           padding: 12px 6px;
           cursor: pointer;
           position: relative;
           transition: color 0.2s;
+          white-space: nowrap;
+          display: inline-flex;
+          align-items: center;
+          gap: 6px;
         }
 
         .tab-btn.active {
-          color: #4edea3;
+          color: var(--af-primary, #4edea3);
         }
 
         .tab-btn.active::after {
@@ -849,8 +1180,17 @@ export class AgentFeedbackWidget extends CustomElementBase {
           left: 0;
           right: 0;
           height: 2px;
-          background: #4edea3;
+          background: var(--af-primary, #4edea3);
           border-radius: 2px;
+        }
+
+        .tab-badge {
+          background: var(--af-primary, #4edea3);
+          color: var(--af-bg-base, #12151c);
+          font-size: 10px;
+          font-weight: 700;
+          padding: 1px 6px;
+          border-radius: 9999px;
         }
 
         /* 视图内容容器 */
@@ -858,6 +1198,7 @@ export class AgentFeedbackWidget extends CustomElementBase {
           padding: 20px;
           overflow-y: auto;
           flex: 1;
+          color: var(--af-text-main, #f3f4f6);
         }
 
         /* 遥测徽标区 */
@@ -869,20 +1210,20 @@ export class AgentFeedbackWidget extends CustomElementBase {
         }
 
         .tele-chip {
-          background: #1e2430;
-          color: #9ca3af;
+          background: var(--af-bg-surface, #1e2430);
+          color: var(--af-text-muted, #9ca3af);
           font-size: 11px;
           font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
           padding: 4px 8px;
-          border-radius: 6px;
-          border: 1px solid #283040;
+          border-radius: calc(var(--af-radius, 12px) - 6px);
+          border: 1px solid var(--af-border, #283040);
           display: flex;
           align-items: center;
           gap: 4px;
         }
 
         .tele-chip strong {
-          color: #4edea3;
+          color: var(--af-primary, #4edea3);
         }
 
         /* 反馈表单 */
@@ -894,18 +1235,18 @@ export class AgentFeedbackWidget extends CustomElementBase {
           display: block;
           font-size: 12px;
           font-weight: 600;
-          color: #d1d5db;
+          color: var(--af-text-main, #d1d5db);
           margin-bottom: 6px;
         }
 
         .feedback-textarea {
           width: 100%;
           min-height: 100px;
-          background: #0f1218;
-          border: 1px solid #2a303c;
-          border-radius: 8px;
+          background: var(--af-bg-surface, #0f1218);
+          border: 1px solid var(--af-border, #2a303c);
+          border-radius: calc(var(--af-radius, 12px) - 4px);
           padding: 10px 12px;
-          color: #f3f4f6;
+          color: var(--af-text-main, #f3f4f6);
           font-size: 13px;
           resize: vertical;
           outline: none;
@@ -913,15 +1254,15 @@ export class AgentFeedbackWidget extends CustomElementBase {
         }
 
         .feedback-textarea:focus {
-          border-color: #4edea3;
+          border-color: var(--af-primary, #4edea3);
           box-shadow: 0 0 0 2px rgba(78, 222, 163, 0.2);
         }
 
         /* 截图附件区 */
         .screenshot-section {
-          background: #11141b;
-          border: 1px dashed #283040;
-          border-radius: 8px;
+          background: var(--af-bg-surface, #11141b);
+          border: 1px dashed var(--af-border, #283040);
+          border-radius: calc(var(--af-radius, 12px) - 4px);
           padding: 12px;
           margin-bottom: 16px;
         }
@@ -933,11 +1274,11 @@ export class AgentFeedbackWidget extends CustomElementBase {
         }
 
         .btn-secondary {
-          background: #1e2430;
-          border: 1px solid #2e374a;
-          color: #d1d5db;
+          background: var(--af-bg-surface, #1e2430);
+          border: 1px solid var(--af-border, #2e374a);
+          color: var(--af-text-main, #d1d5db);
           padding: 6px 12px;
-          border-radius: 6px;
+          border-radius: calc(var(--af-radius, 12px) - 6px);
           font-size: 12px;
           font-weight: 600;
           cursor: pointer;
@@ -947,15 +1288,15 @@ export class AgentFeedbackWidget extends CustomElementBase {
         }
 
         .btn-secondary:hover {
-          background: #252d3d;
-          color: #fff;
+          background: rgba(255, 255, 255, 0.08);
+          color: var(--af-text-main, #fff);
         }
 
         .screenshot-preview {
           position: relative;
           margin-top: 10px;
           display: inline-block;
-          border: 1px solid #283040;
+          border: 1px solid var(--af-border, #283040);
           border-radius: 6px;
           overflow: hidden;
         }
@@ -983,15 +1324,15 @@ export class AgentFeedbackWidget extends CustomElementBase {
         /* 提示信息 */
         .alert {
           padding: 10px 12px;
-          border-radius: 8px;
+          border-radius: calc(var(--af-radius, 12px) - 4px);
           font-size: 12px;
           margin-bottom: 14px;
         }
 
         .alert-success {
           background: rgba(78, 222, 163, 0.15);
-          color: #4edea3;
-          border: 1px solid rgba(78, 222, 163, 0.3);
+          color: var(--af-primary, #4edea3);
+          border: 1px solid var(--af-primary, rgba(78, 222, 163, 0.3));
         }
 
         .alert-error {
@@ -1003,11 +1344,11 @@ export class AgentFeedbackWidget extends CustomElementBase {
         /* 提交操作按钮 */
         .btn-submit {
           width: 100%;
-          background: #4edea3;
+          background: var(--af-primary, #4edea3);
           color: #0b0e14;
           border: none;
           padding: 10px 16px;
-          border-radius: 8px;
+          border-radius: calc(var(--af-radius, 12px) - 4px);
           font-size: 14px;
           font-weight: 700;
           cursor: pointer;
@@ -1015,11 +1356,11 @@ export class AgentFeedbackWidget extends CustomElementBase {
           align-items: center;
           justify-content: center;
           gap: 8px;
-          transition: background 0.15s, transform 0.1s;
+          transition: filter 0.15s, transform 0.1s;
         }
 
         .btn-submit:hover:not(:disabled) {
-          background: #3ecf94;
+          filter: brightness(1.08);
           transform: translateY(-1px);
         }
 
@@ -1028,7 +1369,7 @@ export class AgentFeedbackWidget extends CustomElementBase {
           cursor: not-allowed;
         }
 
-        /* 历史列表视图 */
+        /* 时间轴样式 */
         .history-controls {
           display: flex;
           justify-content: space-between;
@@ -1036,17 +1377,77 @@ export class AgentFeedbackWidget extends CustomElementBase {
           margin-bottom: 14px;
         }
 
-        .history-list {
+        .timeline-container {
           display: flex;
           flex-direction: column;
-          gap: 12px;
+          gap: 16px;
+        }
+
+        .timeline-day-group {
+          position: relative;
+        }
+
+        .timeline-day-header {
+          display: flex;
+          align-items: center;
+          gap: 8px;
+          margin-bottom: 10px;
+        }
+
+        .timeline-dot {
+          width: 10px;
+          height: 10px;
+          border-radius: 50%;
+          background: var(--af-primary, #4edea3);
+          box-shadow: 0 0 10px var(--af-primary, #4edea3);
+          flex-shrink: 0;
+        }
+
+        .timeline-date-title {
+          font-size: 13px;
+          font-weight: 700;
+          color: var(--af-text-main, #f3f4f6);
+        }
+
+        .timeline-date-badge {
+          font-size: 11px;
+          background: var(--af-bg-surface, #1e2430);
+          color: var(--af-text-muted, #9ca3af);
+          padding: 2px 8px;
+          border-radius: 9999px;
+          border: 1px solid var(--af-border, rgba(255,255,255,0.08));
+        }
+
+        .timeline-day-content {
+          position: relative;
+          padding-left: 20px;
+        }
+
+        .timeline-v-line {
+          position: absolute;
+          left: 4px;
+          top: -4px;
+          bottom: 0;
+          width: 2px;
+          background: var(--af-border, rgba(255,255,255,0.12));
+        }
+
+        .timeline-cards {
+          display: flex;
+          flex-direction: column;
+          gap: 10px;
         }
 
         .history-card {
-          background: #11141b;
-          border: 1px solid #222734;
-          border-radius: 10px;
+          background: var(--af-bg-surface, #11141b);
+          border: 1px solid var(--af-border, #222734);
+          border-radius: calc(var(--af-radius, 12px) - 2px);
           padding: 12px 14px;
+        }
+
+        .card-agent-notice {
+          border: 1px solid var(--af-primary, #4edea3);
+          box-shadow: 0 0 12px rgba(78, 222, 163, 0.15);
         }
 
         .card-header {
@@ -1055,37 +1456,37 @@ export class AgentFeedbackWidget extends CustomElementBase {
           align-items: center;
           margin-bottom: 8px;
           font-size: 12px;
-          color: #6b7280;
+          color: var(--af-text-muted, #6b7280);
         }
 
         .card-content {
           font-size: 13px;
-          color: #e5e7eb;
+          color: var(--af-text-main, #e5e7eb);
           margin-bottom: 10px;
           white-space: pre-wrap;
           word-break: break-word;
         }
 
         .agent-reply-box {
-          background: #181f2a;
-          border-left: 3px solid #4edea3;
+          background: var(--af-bg-base, #181f2a);
+          border-left: 3px solid var(--af-primary, #4edea3);
           border-radius: 4px;
           padding: 8px 10px;
           font-size: 12px;
-          color: #cbd5e1;
+          color: var(--af-text-main, #cbd5e1);
           margin-top: 8px;
         }
 
         .agent-reply-header {
           font-weight: 600;
-          color: #4edea3;
+          color: var(--af-primary, #4edea3);
           margin-bottom: 4px;
           display: flex;
           align-items: center;
           gap: 4px;
         }
 
-        /* 状态微章样式 */
+        /* 状态徽章 */
         .badge {
           display: inline-flex;
           align-items: center;
@@ -1108,7 +1509,7 @@ export class AgentFeedbackWidget extends CustomElementBase {
 
         .badge-completed {
           background: rgba(78, 222, 163, 0.15);
-          color: #4edea3;
+          color: var(--af-primary, #4edea3);
         }
 
         .badge-rejected {
@@ -1121,6 +1522,12 @@ export class AgentFeedbackWidget extends CustomElementBase {
           color: #9ca3af;
         }
 
+        .badge-notice {
+          background: rgba(78, 222, 163, 0.15);
+          color: var(--af-primary, #4edea3);
+          border: 1px solid var(--af-primary, rgba(78, 222, 163, 0.3));
+        }
+
         .badge-dot {
           width: 6px;
           height: 6px;
@@ -1128,11 +1535,35 @@ export class AgentFeedbackWidget extends CustomElementBase {
           background: currentColor;
         }
 
+        .btn-load-previous-day {
+          width: 100%;
+          background: var(--af-bg-surface, #1e2430);
+          border: 1px dashed var(--af-border, #2e374a);
+          color: var(--af-text-muted, #9ca3af);
+          padding: 8px 12px;
+          border-radius: calc(var(--af-radius, 12px) - 4px);
+          font-size: 12px;
+          font-weight: 600;
+          cursor: pointer;
+          text-align: center;
+          margin-top: 12px;
+        }
+
+        .btn-load-previous-day:hover {
+          color: var(--af-text-main, #fff);
+          border-color: var(--af-primary, #4edea3);
+        }
+
         .empty-history {
           text-align: center;
           padding: 40px 20px;
-          color: #6b7280;
+          color: var(--af-text-muted, #6b7280);
           font-size: 13px;
+        }
+
+        .ext-tab-container {
+          width: 100%;
+          min-height: 200px;
         }
       </style>
 
@@ -1154,12 +1585,19 @@ export class AgentFeedbackWidget extends CustomElementBase {
             <button class="modal-close" title="关闭">&times;</button>
           </div>
 
-          <!-- Tab 选项卡 -->
+          <!-- Tab 选项卡 (包含原生 Tab 与动态注册的扩展槽) -->
           <div class="tabs">
             <button class="tab-btn tab-btn-submit ${this.activeTab === 'submit' ? 'active' : ''}">新建反馈</button>
             <button class="tab-btn tab-btn-history ${this.activeTab === 'history' ? 'active' : ''}">
-              历史与进度 ${this.historyList.length > 0 ? `(${this.historyList.length})` : ''}
+              历史与进度 ${this.totalTicketsCount > 0 ? `(${this.totalTicketsCount})` : ''}
             </button>
+            ${extensions.map(ext => `
+              <button class="tab-btn tab-btn-${ext.id} ${this.activeTab === ext.id ? 'active' : ''}">
+                ${ext.icon ? `<span>${ext.icon}</span>` : ''}
+                <span>${ext.label}</span>
+                ${ext.badge !== undefined ? `<span class="tab-badge">${ext.badge}</span>` : ''}
+              </button>
+            `).join('')}
           </div>
 
           <!-- 弹窗主体 -->
@@ -1214,48 +1652,17 @@ export class AgentFeedbackWidget extends CustomElementBase {
                   ${this.isSubmitting ? '正在提交...' : '🚀 提交并通知 AI Agent'}
                 </button>
               `
-                : `
-                <!-- 历史与进度视图 -->
+                : this.activeTab === 'history'
+                ? `
                 <div class="history-controls">
-                  <span style="font-size: 12px; color: #9ca3af;">共 ${this.historyList.length} 条记录</span>
+                  <span style="font-size: 12px; color: var(--af-text-muted, #9ca3af);">共 ${this.totalTicketsCount || this.historyList.length} 条记录</span>
                   <button class="btn-secondary btn-refresh-history">🔄 刷新</button>
                 </div>
-
-                ${
-                  this.isLoadingHistory
-                    ? `<div style="text-align: center; padding: 30px; color: #9ca3af;">正在获取进度...</div>`
-                    : this.historyList.length === 0
-                    ? `<div class="empty-history">暂无反馈记录。点击“新建反馈”提交第一条反馈！</div>`
-                    : `
-                    <div class="history-list">
-                      ${this.historyList
-                        .slice()
-                        .reverse()
-                        .map(
-                          item => `
-                        <div class="history-card">
-                          <div class="card-header">
-                            <span>#${item.id} · ${item.receivedAt ? item.receivedAt.slice(11, 19) : ''}</span>
-                            ${this.renderStatusBadge(item.status)}
-                          </div>
-                          <div class="card-content">${item.content}</div>
-                          ${
-                            item.reply
-                              ? `
-                            <div class="agent-reply-box">
-                              <div class="agent-reply-header">🤖 Agent 修复说明:</div>
-                              <div>${item.reply}</div>
-                            </div>
-                          `
-                              : ''
-                          }
-                        </div>
-                      `
-                        )
-                        .join('')}
-                    </div>
-                  `
-                }
+                ${this.renderTimelineView()}
+              `
+                : `
+                <!-- 自定义扩展 Tab 容器 -->
+                <div class="ext-tab-container" data-tab-id="${this.activeTab}"></div>
               `
             }
           </div>

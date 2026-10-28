@@ -1,4 +1,4 @@
-﻿# 主题：task-5-integration-playground
+# 主题：task-5-integration-playground
 
 - 当前状态：已完成
 - 最后更新时间：2026-10-28

@@ -1,4 +1,4 @@
-﻿/**
+/**
  * @agent-feedback/core
  * In-App Agent Feedback Bridge - Core Data Protocol and Types
  */
@@ -7,6 +7,16 @@
  * 反馈流转状态
  */
 export type FeedbackStatus = 'pending' | 'processing' | 'completed' | 'rejected' | 'ignored';
+
+/**
+ * 反馈工单类型：用户反馈或 Agent 主动通知
+ */
+export type FeedbackType = 'user_feedback' | 'agent_notice';
+
+/**
+ * 主题类型定义
+ */
+export type FeedbackTheme = 'dark' | 'light' | 'auto';
 
 /**
  * 运行平台标识
@@ -52,6 +62,8 @@ export interface TelemetrySnapshot {
  */
 export interface InAppFeedback {
   id: number;
+  type?: FeedbackType;
+  date?: string;
   timestamp: number;
   receivedAt: string;
   content: string;
@@ -61,6 +73,35 @@ export interface InAppFeedback {
   telemetry: TelemetrySnapshot;
   screenshots?: string[];
   consoleLogs?: ConsoleLogEntry[];
+}
+
+/**
+ * 按天分片持久化索引元数据
+ */
+export interface FeedbackDateIndex {
+  dates: string[]; // 按降序排列，如 ['2026-10-28', '2026-10-27']
+  totalCount: number;
+  updatedAt: string;
+}
+
+/**
+ * 扩展槽执行上下文
+ */
+export interface ExtensionContext {
+  closeModal: () => void;
+  openTab: (tabId: string) => void;
+  theme: string;
+}
+
+/**
+ * 模态框自定义扩展 Tab 定义
+ */
+export interface FeedbackExtensionTab {
+  id: string;
+  label: string;
+  icon?: string;
+  badge?: string | number;
+  render: (container: HTMLElement, context: ExtensionContext) => void | (() => void);
 }
 
 /**

@@ -1,4 +1,4 @@
-﻿# In-App Agent Feedback Bridge SDK 设计规范 (Design Spec)
+# In-App Agent Feedback Bridge SDK 设计规范 (Design Spec)
 
 > **文档版本**: 1.0.0
 > **创建日期**: 2026-10-27

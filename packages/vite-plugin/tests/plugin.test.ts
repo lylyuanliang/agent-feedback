@@ -1,4 +1,4 @@
-﻿import { describe, it, beforeEach, afterEach } from 'node:test';
+import { describe, it, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -399,5 +399,179 @@ describe('@agent-feedback/vite-plugin DevServer Middleware & Request Handling', 
     assert.strictEqual(res.statusCode, 500);
     const errJson = JSON.parse(res.body);
     assert.ok(errJson.error);
+  });
+});
+
+describe('@agent-feedback/vite-plugin Sharded Persistence & Upgraded API Middleware', () => {
+  const tmpProjectDir = path.resolve('D:/file_save/workspace/github/agent-feedback', '.tmp-test-sharded-plugin');
+
+  beforeEach(() => {
+    fs.mkdirSync(tmpProjectDir, { recursive: true });
+  });
+
+  afterEach(() => {
+    try {
+      fs.rmSync(tmpProjectDir, { recursive: true, force: true });
+    } catch {}
+  });
+
+  it('should save submissions to feedback_YYYY-MM-DD.json and update feedback_index.json', async () => {
+    const plugin = agentFeedback();
+    const server = new MockDevServer(tmpProjectDir);
+    plugin.configureServer?.(server);
+
+    const now = new Date();
+    const today = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+
+    const req = new MockReq('POST', '/api/__agent_feedback/submit');
+    const res = new MockRes();
+    const p = server.dispatch(req, res);
+    req.send(JSON.stringify({
+      id: 5001,
+      content: '今日分片提交测试',
+      type: 'user_feedback'
+    }));
+    await p;
+
+    assert.strictEqual(res.statusCode, 200);
+
+    const shardFile = path.resolve(tmpProjectDir, `.agent/feedback/feedback_${today}.json`);
+    const indexFile = path.resolve(tmpProjectDir, '.agent/feedback/feedback_index.json');
+
+    assert.ok(fs.existsSync(shardFile), 'Shard file should exist for today');
+    assert.ok(fs.existsSync(indexFile), 'Index file should exist');
+
+    const shardData = JSON.parse(fs.readFileSync(shardFile, 'utf-8'));
+    assert.strictEqual(shardData.length, 1);
+    assert.strictEqual(shardData[0].id, 5001);
+    assert.strictEqual(shardData[0].type, 'user_feedback');
+    assert.strictEqual(shardData[0].date, today);
+
+    const indexData = JSON.parse(fs.readFileSync(indexFile, 'utf-8'));
+    assert.ok(indexData.dates.includes(today));
+    assert.strictEqual(indexData.totalCount, 1);
+  });
+
+  it('should migrate legacy feedback_queue.json to daily shards on startup', async () => {
+    const feedbackDir = path.resolve(tmpProjectDir, '.agent/feedback');
+    fs.mkdirSync(feedbackDir, { recursive: true });
+
+    const legacyItems = [
+      { id: 1001, content: '昨天的问题', receivedAt: '2026-10-27T10:00:00.000Z', status: 'completed' },
+      { id: 1002, content: '前天的问题', receivedAt: '2026-10-26T12:00:00.000Z', status: 'completed' }
+    ];
+    fs.writeFileSync(path.resolve(feedbackDir, 'feedback_queue.json'), JSON.stringify(legacyItems, null, 2), 'utf-8');
+
+    const plugin = agentFeedback();
+    const server = new MockDevServer(tmpProjectDir);
+    plugin.configureServer?.(server);
+
+    const indexFile = path.resolve(feedbackDir, 'feedback_index.json');
+    assert.ok(fs.existsSync(indexFile));
+    const indexData = JSON.parse(fs.readFileSync(indexFile, 'utf-8'));
+    assert.strictEqual(indexData.totalCount, 2);
+    assert.ok(indexData.dates.length >= 2);
+  });
+
+  it('should handle POST /api/__agent_feedback/notice to create agent notice', async () => {
+    const plugin = agentFeedback();
+    const server = new MockDevServer(tmpProjectDir);
+    plugin.configureServer?.(server);
+
+    const req = new MockReq('POST', '/api/__agent_feedback/notice');
+    const res = new MockRes();
+    const p = server.dispatch(req, res);
+    req.send(JSON.stringify({
+      id: 6001,
+      content: 'Agent 修复通知：已优化高山列表渲染性能'
+    }));
+    await p;
+
+    assert.strictEqual(res.statusCode, 200);
+    const data = JSON.parse(res.body);
+    assert.strictEqual(data.success, true);
+    assert.strictEqual(data.item.type, 'agent_notice');
+    assert.strictEqual(data.item.status, 'completed');
+  });
+
+  it('should handle GET /api/__agent_feedback/dates and query by date in /list', async () => {
+    const plugin = agentFeedback();
+    const server = new MockDevServer(tmpProjectDir);
+    plugin.configureServer?.(server);
+
+    // 提交两条不同日期的反馈
+    const date1 = '2026-10-27';
+    const date2 = '2026-10-28';
+
+    const req1 = new MockReq('POST', '/api/__agent_feedback/submit');
+    const res1 = new MockRes();
+    const p1 = server.dispatch(req1, res1);
+    req1.send(JSON.stringify({ id: 7001, content: '27号反馈', date: date1, timestamp: new Date(date1).getTime() }));
+    await p1;
+
+    const req2 = new MockReq('POST', '/api/__agent_feedback/submit');
+    const res2 = new MockRes();
+    const p2 = server.dispatch(req2, res2);
+    req2.send(JSON.stringify({ id: 7002, content: '28号反馈', date: date2, timestamp: new Date(date2).getTime() }));
+    await p2;
+
+    // 1. GET /dates
+    const datesReq = new MockReq('GET', '/api/__agent_feedback/dates');
+    const datesRes = new MockRes();
+    await server.dispatch(datesReq, datesRes);
+    assert.strictEqual(datesRes.statusCode, 200);
+    const datesData = JSON.parse(datesRes.body);
+    assert.strictEqual(datesData.totalCount, 2);
+    assert.ok(datesData.dates.includes(date1));
+    assert.ok(datesData.dates.includes(date2));
+
+    // 2. GET /list?date=2026-10-27
+    const listReq = new MockReq('GET', `/api/__agent_feedback/list?date=${date1}`);
+    const listRes = new MockRes();
+    await server.dispatch(listReq, listRes);
+    const listData = JSON.parse(listRes.body);
+    assert.strictEqual(listData.length, 1);
+    assert.strictEqual(listData[0].id, 7001);
+  });
+
+  it('should handle POST /api/__agent_feedback/status for cross-shard status updates', async () => {
+    const plugin = agentFeedback();
+    const server = new MockDevServer(tmpProjectDir);
+    plugin.configureServer?.(server);
+
+    // 提交一条待处理反馈
+    const req = new MockReq('POST', '/api/__agent_feedback/submit');
+    const res = new MockRes();
+    const p = server.dispatch(req, res);
+    req.send(JSON.stringify({ id: 8001, content: '待修复问题' }));
+    await p;
+
+    // 跨分片更新状态
+    const statusReq = new MockReq('POST', '/api/__agent_feedback/status');
+    const statusRes = new MockRes();
+    const statusPromise = server.dispatch(statusReq, statusRes);
+    statusReq.send(JSON.stringify({
+      id: 8001,
+      status: 'completed',
+      reply: '已由 AI 修复完毕'
+    }));
+    await statusPromise;
+
+    assert.strictEqual(statusRes.statusCode, 200);
+    const updated = JSON.parse(statusRes.body);
+    assert.strictEqual(updated.success, true);
+    assert.strictEqual(updated.item.status, 'completed');
+    assert.strictEqual(updated.item.reply, '已由 AI 修复完毕');
+  });
+
+  it('should pass theme and primaryColor options to virtual client module', () => {
+    const plugin = agentFeedback({
+      theme: 'light',
+      primaryColor: '#2563eb'
+    });
+
+    const code = plugin.load?.('\0agent-feedback-client-virtual');
+    assert.ok(code.includes('theme: "light"'));
+    assert.ok(code.includes('primaryColor: "#2563eb"'));
   });
 });

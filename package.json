@@ -1,4 +1,4 @@
-﻿{
+{
   "name": "agent-feedback-monorepo",
   "version": "1.0.0",
   "private": true,
@@ -21,6 +21,7 @@
   "author": "Antigravity Pair",
   "license": "MIT",
   "devDependencies": {
+    "@types/node": "^26.6.5",
     "typescript": "^5.6.3"
   }
 }

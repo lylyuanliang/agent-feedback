@@ -1,4 +1,4 @@
-﻿import { describe, it, beforeEach, afterEach, after } from 'node:test';
+import { describe, it, beforeEach, afterEach, after } from 'node:test';
 import assert from 'node:assert';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -13,7 +13,9 @@ import {
   getLastProcessedId,
   setLastProcessedId,
   mcpTools,
-  executeMcpTool
+  executeMcpTool,
+  insertNotice,
+  getLocalDateString
 } from '../src/index.ts';
 import type { InAppFeedback } from '../src/index.ts';
 
@@ -459,5 +461,62 @@ describe('@agent-feedback/sentinel - CLI Entrypoint (bin/cli.js)', () => {
         return true;
       }
     );
+  });
+
+  it('should insert agent notice via notice CLI command and write to today shard', async () => {
+    const noticeContent = 'AI Agent 自动修复：已优化拓扑图缓存与离线加载';
+    const cmd = `node "${cliPath}" notice "${noticeContent}" --dir "${testDir}"`;
+    const { stdout } = await execAsync(cmd);
+
+    assert.match(stdout, /成功插入系统通知工单/);
+    assert.match(stdout, /agent_notice/);
+
+    const today = getLocalDateString();
+    const shardFile = path.resolve(testDir, `feedback_${today}.json`);
+    const indexFile = path.resolve(testDir, 'feedback_index.json');
+
+    assert.ok(fs.existsSync(shardFile), 'Today shard must exist');
+    assert.ok(fs.existsSync(indexFile), 'Index file must exist');
+
+    const shardList: InAppFeedback[] = JSON.parse(fs.readFileSync(shardFile, 'utf-8'));
+    assert.strictEqual(shardList[0].content, noticeContent);
+    assert.strictEqual(shardList[0].type, 'agent_notice');
+    assert.strictEqual(shardList[0].status, 'completed');
+  });
+
+  it('should support insertNotice helper and sharded listening in startSentinel', async () => {
+    const item = insertNotice(testDir, '哨兵分片测试通知');
+    assert.strictEqual(item.type, 'agent_notice');
+    assert.strictEqual(item.status, 'completed');
+
+    // 写入一个待处理的反馈到当天分片
+    const today = getLocalDateString();
+    const shardFile = path.resolve(testDir, `feedback_${today}.json`);
+    const existing = JSON.parse(fs.readFileSync(shardFile, 'utf-8'));
+    existing.unshift({
+      id: 9901,
+      content: '分片中的新问题',
+      status: 'pending',
+      timestamp: Date.now(),
+      receivedAt: new Date().toISOString(),
+      date: today,
+      telemetry: { route: '/', viewport: { width: 390, height: 844, dpr: 3 }, userAgent: 'test', platform: 'ios' }
+    });
+    fs.writeFileSync(shardFile, JSON.stringify(existing, null, 2), 'utf-8');
+
+    let awakenedBatch: InAppFeedback[] = [];
+    await startSentinel({
+      storageDir: testDir,
+      debounceMs: 50,
+      pollIntervalMs: 20,
+      silent: true,
+      onWakeup: (batch) => {
+        awakenedBatch = batch;
+      }
+    });
+
+    assert.strictEqual(awakenedBatch.length, 1);
+    assert.strictEqual(awakenedBatch[0].id, 9901);
+    assert.strictEqual(awakenedBatch[0].status, 'processing');
   });
 });

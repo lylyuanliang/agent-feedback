@@ -1,4 +1,4 @@
-﻿/**
+/**
  * @agent-feedback/sentinel
  * In-App Agent Feedback Bridge - Silent Sentinel & Wakeup CLI
  */
@@ -7,12 +7,13 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { exec } from 'node:child_process';
 import { promisify } from 'node:util';
-import { sanitizeFeedbackContent } from '../../core/src/index.ts';
+import { sanitizeFeedbackContent } from '@agent-feedback/core';
 import type {
   InAppFeedback,
   FeedbackStatus,
-  SecurityTriageResult
-} from '../../core/src/index.ts';
+  SecurityTriageResult,
+  FeedbackDateIndex
+} from '@agent-feedback/core';
 
 export type {
   InAppFeedback,
@@ -55,6 +56,21 @@ export interface WatcherOptions {
   signal?: AbortSignal;
   /** 是否静默控制台输出 (测试时开启可保持输出整洁) */
   silent?: boolean;
+}
+
+/**
+ * 获取本地 YYYY-MM-DD 日期字符串
+ */
+export function getLocalDateString(d: Date | number | string = new Date()): string {
+  const dateObj = typeof d === 'object' && d instanceof Date ? d : new Date(d);
+  if (isNaN(dateObj.getTime())) {
+    const fallback = new Date();
+    return `${fallback.getFullYear()}-${String(fallback.getMonth() + 1).padStart(2, '0')}-${String(fallback.getDate()).padStart(2, '0')}`;
+  }
+  const year = dateObj.getFullYear();
+  const month = String(dateObj.getMonth() + 1).padStart(2, '0');
+  const day = String(dateObj.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
 }
 
 /**
@@ -105,25 +121,167 @@ export function atomicWriteJson(filePath: string, data: any): void {
 }
 
 /**
+ * 插入系统通知工单到当天分片
+ */
+export function insertNotice(
+  storageDirOrFile: string,
+  content: string,
+  extra: Partial<InAppFeedback> = {}
+): InAppFeedback {
+  const isFile = fs.existsSync(storageDirOrFile) && fs.statSync(storageDirOrFile).isFile();
+  const storageDir = isFile ? path.dirname(storageDirOrFile) : storageDirOrFile;
+  const queueFile = isFile ? storageDirOrFile : path.resolve(storageDir, 'feedback_queue.json');
+
+  if (!fs.existsSync(storageDir)) {
+    fs.mkdirSync(storageDir, { recursive: true });
+  }
+
+  const now = Date.now();
+  const date = getLocalDateString(extra.timestamp || now);
+  const noticeItem: InAppFeedback = {
+    id: extra.id || now,
+    type: 'agent_notice',
+    status: extra.status || 'completed',
+    content,
+    receivedAt: extra.receivedAt || new Date(now).toISOString(),
+    timestamp: extra.timestamp || now,
+    date,
+    reply: extra.reply || '系统主动推送的 Agent 通知',
+    telemetry: extra.telemetry || {
+      route: 'cli',
+      viewport: { width: 0, height: 0, dpr: 1 },
+      userAgent: '@agent-feedback/sentinel-cli',
+      platform: 'desktop'
+    }
+  };
+
+  // 1. 写入当天分片
+  const shardFile = path.resolve(storageDir, `feedback_${date}.json`);
+  let shardItems: InAppFeedback[] = [];
+  if (fs.existsSync(shardFile)) {
+    try {
+      const parsed = JSON.parse(fs.readFileSync(shardFile, 'utf-8'));
+      if (Array.isArray(parsed)) shardItems = parsed;
+    } catch {}
+  }
+  shardItems.unshift(noticeItem);
+  atomicWriteJson(shardFile, shardItems);
+
+  // 2. 更新索引
+  const indexFile = path.resolve(storageDir, 'feedback_index.json');
+  let dates: string[] = [date];
+  let totalCount = shardItems.length;
+  if (fs.existsSync(indexFile)) {
+    try {
+      const idxData: FeedbackDateIndex = JSON.parse(fs.readFileSync(indexFile, 'utf-8'));
+      if (Array.isArray(idxData.dates)) {
+        dates = Array.from(new Set([date, ...idxData.dates]));
+        dates.sort((a, b) => b.localeCompare(a));
+        totalCount = (idxData.totalCount || 0) + 1;
+      }
+    } catch {}
+  }
+  atomicWriteJson(indexFile, {
+    dates,
+    totalCount,
+    updatedAt: new Date().toISOString()
+  });
+
+  // 3. 同步写回 feedback_queue.json
+  let queueItems: InAppFeedback[] = [];
+  if (fs.existsSync(queueFile)) {
+    try {
+      const parsed = JSON.parse(fs.readFileSync(queueFile, 'utf-8'));
+      if (Array.isArray(parsed)) queueItems = parsed;
+    } catch {}
+  }
+  queueItems.unshift(noticeItem);
+  atomicWriteJson(queueFile, queueItems);
+
+  return noticeItem;
+}
+
+/**
+ * 从存储目录或队列文件中聚合获取新待处理反馈
+ */
+export function collectPendingItemsFromStorage(
+  storageDir: string,
+  queueFile: string,
+  lastProcessedId: number
+): InAppFeedback[] {
+  const map = new Map<number, InAppFeedback>();
+
+  // 1. 优先扫描当天及最近的分片文件
+  const today = getLocalDateString();
+  const todayShard = path.resolve(storageDir, `feedback_${today}.json`);
+  if (fs.existsSync(todayShard)) {
+    try {
+      const items = JSON.parse(fs.readFileSync(todayShard, 'utf-8'));
+      if (Array.isArray(items)) {
+        for (const item of items) {
+          if (item.id > lastProcessedId && item.status === 'pending') {
+            map.set(item.id, item);
+          }
+        }
+      }
+    } catch {}
+  }
+
+  // 扫描 index 中的近期分片
+  const indexFile = path.resolve(storageDir, 'feedback_index.json');
+  if (fs.existsSync(indexFile)) {
+    try {
+      const index = JSON.parse(fs.readFileSync(indexFile, 'utf-8'));
+      if (Array.isArray(index?.dates)) {
+        for (const date of index.dates.slice(0, 3)) {
+          const shardPath = path.resolve(storageDir, `feedback_${date}.json`);
+          if (fs.existsSync(shardPath) && shardPath !== todayShard) {
+            const items = JSON.parse(fs.readFileSync(shardPath, 'utf-8'));
+            if (Array.isArray(items)) {
+              for (const item of items) {
+                if (item.id > lastProcessedId && item.status === 'pending') {
+                  map.set(item.id, item);
+                }
+              }
+            }
+          }
+        }
+      }
+    } catch {}
+  }
+
+  // 2. 检查 feedback_queue.json
+  if (fs.existsSync(queueFile)) {
+    try {
+      const raw = fs.readFileSync(queueFile, 'utf-8');
+      const queue = JSON.parse(raw);
+      if (Array.isArray(queue)) {
+        for (const item of queue) {
+          if (item.id > lastProcessedId && item.status === 'pending') {
+            map.set(item.id, item);
+          }
+        }
+      }
+    } catch {}
+  }
+
+  return Array.from(map.values()).sort((a, b) => a.id - b.id);
+}
+
+/**
  * 批量处理并分诊端侧反馈
- * 1. 执行第 1 道启发式安全防线 (防 Prompt 注入与破坏性指令)
- * 2. 恶意请求标记为 rejected 并记录原因
- * 3. 合法请求标记为 processing 并附带聚合批次通知
- * 4. 原子化持久化至队列文件并更新 last_processed_id.txt
- *
- * @param queueFile 队列文件路径
- * @param items 本批次捕获的反馈数组
- * @param options 可选配置
- * @returns 更新后的反馈数组
  */
 export function processQueueBatch(
-  queueFile: string,
+  queueFileOrDir: string,
   items: InAppFeedback[],
   options: WatcherOptions = {}
 ): InAppFeedback[] {
+  const isFile = fs.existsSync(queueFileOrDir) && fs.statSync(queueFileOrDir).isFile();
+  const storageDir = isFile ? path.dirname(queueFileOrDir) : queueFileOrDir;
+  const queueFile = isFile ? queueFileOrDir : path.resolve(storageDir, 'feedback_queue.json');
   const lastProcessedFile =
     options.lastProcessedFile ||
-    path.resolve(path.dirname(queueFile), 'last_processed_id.txt');
+    path.resolve(storageDir, 'last_processed_id.txt');
 
   let curQueue: InAppFeedback[] = [];
   if (fs.existsSync(queueFile)) {
@@ -156,6 +314,23 @@ export function processQueueBatch(
     item.updatedAt = nowIso;
     processedItems.push(item);
 
+    // 同步写入对应日期的分片
+    const itemDate = item.date || getLocalDateString(item.receivedAt || item.timestamp);
+    item.date = itemDate;
+    const shardFile = path.resolve(storageDir, `feedback_${itemDate}.json`);
+    if (fs.existsSync(shardFile)) {
+      try {
+        const shardItems: InAppFeedback[] = JSON.parse(fs.readFileSync(shardFile, 'utf-8'));
+        const idx = shardItems.findIndex(i => i.id === item.id);
+        if (idx >= 0) {
+          shardItems[idx] = { ...shardItems[idx], ...item };
+        } else {
+          shardItems.unshift(item);
+        }
+        atomicWriteJson(shardFile, shardItems);
+      } catch {}
+    }
+
     // 同步更新至全局队列中的对应条目
     const existingIndex = curQueue.findIndex(q => q.id === item.id);
     if (existingIndex >= 0) {
@@ -166,7 +341,9 @@ export function processQueueBatch(
   }
 
   // 原子化写回队列
-  atomicWriteJson(queueFile, curQueue);
+  if (curQueue.length > 0 || fs.existsSync(queueFile)) {
+    atomicWriteJson(queueFile, curQueue);
+  }
 
   // 更新已处理最大 ID 游标
   setLastProcessedId(lastProcessedFile, maxId);
@@ -175,7 +352,7 @@ export function processQueueBatch(
 }
 
 /**
- * 手动更新单个反馈状态 (支持 CLI 和 MCP 回写)
+ * 手动更新单个反馈状态 (支持跨分片检索、CLI 和 MCP 回写)
  */
 export function updateFeedbackStatus(
   queueFileOrDir: string,
@@ -183,30 +360,54 @@ export function updateFeedbackStatus(
   status: FeedbackStatus,
   reply?: string
 ): InAppFeedback | null {
-  const queueFile = fs.existsSync(queueFileOrDir) && fs.statSync(queueFileOrDir).isFile()
-    ? queueFileOrDir
-    : path.resolve(queueFileOrDir, 'feedback_queue.json');
+  const isFile = fs.existsSync(queueFileOrDir) && fs.statSync(queueFileOrDir).isFile();
+  const storageDir = isFile ? path.dirname(queueFileOrDir) : queueFileOrDir;
+  const queueFile = isFile ? queueFileOrDir : path.resolve(storageDir, 'feedback_queue.json');
+  const numId = Number(id);
 
-  if (!fs.existsSync(queueFile)) return null;
+  let updatedItem: InAppFeedback | null = null;
 
-  try {
-    const raw = fs.readFileSync(queueFile, 'utf-8');
-    const queue: InAppFeedback[] = JSON.parse(raw);
-    const item = queue.find(i => i.id === Number(id));
-
-    if (!item) return null;
-
-    item.status = status;
-    if (reply !== undefined) {
-      item.reply = reply;
-    }
-    item.updatedAt = new Date().toISOString();
-
-    atomicWriteJson(queueFile, queue);
-    return item;
-  } catch {
-    return null;
+  // 1. 跨分片检索并更新
+  if (fs.existsSync(storageDir)) {
+    try {
+      const files = fs.readdirSync(storageDir);
+      const shardFiles = files.filter(f => f.startsWith('feedback_') && f.endsWith('.json') && f !== 'feedback_index.json' && f !== 'feedback_queue.json');
+      for (const sf of shardFiles) {
+        const shardPath = path.resolve(storageDir, sf);
+        try {
+          const raw = fs.readFileSync(shardPath, 'utf-8');
+          const shardList: InAppFeedback[] = JSON.parse(raw);
+          const item = shardList.find(i => i.id === numId);
+          if (item) {
+            item.status = status;
+            if (reply !== undefined) item.reply = reply;
+            item.updatedAt = new Date().toISOString();
+            atomicWriteJson(shardPath, shardList);
+            updatedItem = item;
+            break;
+          }
+        } catch {}
+      }
+    } catch {}
   }
+
+  // 2. 同步更新 feedback_queue.json
+  if (fs.existsSync(queueFile)) {
+    try {
+      const raw = fs.readFileSync(queueFile, 'utf-8');
+      const queue: InAppFeedback[] = JSON.parse(raw);
+      const item = queue.find(i => i.id === numId);
+      if (item) {
+        item.status = status;
+        if (reply !== undefined) item.reply = reply;
+        item.updatedAt = new Date().toISOString();
+        atomicWriteJson(queueFile, queue);
+        if (!updatedItem) updatedItem = item;
+      }
+    } catch {}
+  }
+
+  return updatedItem;
 }
 
 /**
@@ -216,27 +417,54 @@ export function getPendingFeedback(
   queueFileOrDir: string,
   statusFilter?: FeedbackStatus | 'all'
 ): InAppFeedback[] {
-  const queueFile = fs.existsSync(queueFileOrDir) && fs.statSync(queueFileOrDir).isFile()
-    ? queueFileOrDir
-    : path.resolve(queueFileOrDir, 'feedback_queue.json');
+  const isFile = fs.existsSync(queueFileOrDir) && fs.statSync(queueFileOrDir).isFile();
+  const storageDir = isFile ? path.dirname(queueFileOrDir) : queueFileOrDir;
+  const queueFile = isFile ? queueFileOrDir : path.resolve(storageDir, 'feedback_queue.json');
 
-  if (!fs.existsSync(queueFile)) return [];
+  const map = new Map<number, InAppFeedback>();
 
-  try {
-    const raw = fs.readFileSync(queueFile, 'utf-8');
-    const queue: InAppFeedback[] = JSON.parse(raw);
-    if (!Array.isArray(queue)) return [];
-
-    if (!statusFilter || statusFilter === 'pending') {
-      return queue.filter(i => i.status === 'pending');
-    }
-    if (statusFilter === 'all') {
-      return queue;
-    }
-    return queue.filter(i => i.status === statusFilter);
-  } catch {
-    return [];
+  // 优先从分片读取
+  if (fs.existsSync(storageDir)) {
+    try {
+      const files = fs.readdirSync(storageDir);
+      const shardFiles = files.filter(f => f.startsWith('feedback_') && f.endsWith('.json') && f !== 'feedback_index.json' && f !== 'feedback_queue.json');
+      for (const sf of shardFiles) {
+        try {
+          const list: InAppFeedback[] = JSON.parse(fs.readFileSync(path.resolve(storageDir, sf), 'utf-8'));
+          if (Array.isArray(list)) {
+            for (const item of list) {
+              map.set(item.id, item);
+            }
+          }
+        } catch {}
+      }
+    } catch {}
   }
+
+  // 合并 feedback_queue.json
+  if (fs.existsSync(queueFile)) {
+    try {
+      const raw = fs.readFileSync(queueFile, 'utf-8');
+      const queue: InAppFeedback[] = JSON.parse(raw);
+      if (Array.isArray(queue)) {
+        for (const item of queue) {
+          if (!map.has(item.id)) {
+            map.set(item.id, item);
+          }
+        }
+      }
+    } catch {}
+  }
+
+  const allItems = Array.from(map.values()).sort((a, b) => b.id - a.id);
+
+  if (!statusFilter || statusFilter === 'pending') {
+    return allItems.filter(i => i.status === 'pending');
+  }
+  if (statusFilter === 'all') {
+    return allItems;
+  }
+  return allItems.filter(i => i.status === statusFilter);
 }
 
 /**
@@ -420,7 +648,7 @@ export async function startMcpServer(options: WatcherOptions = {}): Promise<void
 
 /**
  * 静默哨兵核心监听器
- * 1. 静默低开销轮询 feedback_queue.json
+ * 1. 适配按天分片存储目录及队列文件的静默轮询
  * 2. 捕获第 1 条新 pending 反馈后，自动开启防抖聚合窗口 (默认 10s，支持毫秒配置)
  * 3. 聚合完成后执行启发式安全分诊
  * 4. 触发对应适配器唤醒 (antigravity 正常 exit(0)，mcp / webhook 触发钩子)
@@ -442,8 +670,8 @@ export async function startSentinel(options: WatcherOptions = {}): Promise<void>
     : (...args: any[]) => console.warn(...args);
 
   // 确保存储目录就绪
-  if (!fs.existsSync(path.dirname(queueFile))) {
-    fs.mkdirSync(path.dirname(queueFile), { recursive: true });
+  if (!fs.existsSync(storageDir)) {
+    fs.mkdirSync(storageDir, { recursive: true });
   }
 
   let lastProcessedId = getLastProcessedId(lastProcessedFile);
@@ -478,99 +706,86 @@ export async function startSentinel(options: WatcherOptions = {}): Promise<void>
       }
 
       try {
-        if (fs.existsSync(queueFile)) {
-          const raw = fs.readFileSync(queueFile, 'utf-8');
-          const queue: InAppFeedback[] = JSON.parse(raw);
+        const newItems = collectPendingItemsFromStorage(storageDir, queueFile, lastProcessedId);
 
-          // 寻找所有最新未处理的 pending 反馈
-          const newItems = Array.isArray(queue)
-            ? queue.filter(item => item.id > lastProcessedId && item.status === 'pending')
-            : [];
+        if (newItems.length > 0) {
+          log(`\n[*] 📥 捕获到新反馈 (初始 ${newItems.length} 条)，启动 ${debounceMs / 1000} 秒防抖收集窗口...`);
 
-          if (newItems.length > 0) {
-            log(`\n[*] 📥 捕获到新反馈 (初始 ${newItems.length} 条)，启动 ${debounceMs / 1000} 秒防抖收集窗口...`);
+          const startTime = Date.now();
+          let aggregatedItems = [...newItems];
 
-            const startTime = Date.now();
-            let aggregatedItems = [...newItems];
+          while (Date.now() - startTime < debounceMs) {
+            if (!isRunning || options.signal?.aborted) break;
 
-            while (Date.now() - startTime < debounceMs) {
-              if (!isRunning || options.signal?.aborted) break;
+            await new Promise(r => setTimeout(r, stepInterval));
 
-              await new Promise(r => setTimeout(r, stepInterval));
+            try {
+              const curNew = collectPendingItemsFromStorage(storageDir, queueFile, lastProcessedId);
+              if (curNew.length > aggregatedItems.length) {
+                log(`[*] ➕ 窗口内捕获追加提交，当前聚合批次数量: ${curNew.length} 条...`);
+                aggregatedItems = curNew;
+                options.onDebounceProgress?.(curNew.length);
+              }
+            } catch {
+              // 忽略窗口内的读锁瞬态
+            }
+          }
 
+          log(`[*] ✅ 防抖收集完毕，共聚合 ${aggregatedItems.length} 条端侧反馈！`);
+
+          // 执行安全分诊与状态持久化
+          const target = fs.existsSync(queueFile) ? queueFile : storageDir;
+          const processedBatch = processQueueBatch(target, aggregatedItems, options);
+          lastProcessedId = getLastProcessedId(lastProcessedFile);
+
+          // 适配器调度分发
+          if (adapter === 'webhook') {
+            if (options.webhookCommand) {
               try {
-                if (fs.existsSync(queueFile)) {
-                  const curQueue: InAppFeedback[] = JSON.parse(fs.readFileSync(queueFile, 'utf-8'));
-                  const curNew = Array.isArray(curQueue)
-                    ? curQueue.filter(item => item.id > lastProcessedId && item.status === 'pending')
-                    : [];
-
-                  if (curNew.length > aggregatedItems.length) {
-                    log(`[*] ➕ 窗口内捕获追加提交，当前聚合批次数量: ${curNew.length} 条...`);
-                    aggregatedItems = curNew;
-                    options.onDebounceProgress?.(curNew.length);
+                await execAsync(options.webhookCommand, {
+                  env: {
+                    ...process.env,
+                    FEEDBACK_COUNT: String(processedBatch.length),
+                    FEEDBACK_IDS: processedBatch.map(i => i.id).join(',')
                   }
-                }
-              } catch {
-                // 忽略窗口内的读锁瞬态
+                });
+              } catch (cmdErr: any) {
+                warn(`[!] Webhook 命令执行异常: ${cmdErr?.message}`);
               }
             }
-
-            log(`[*] ✅ 防抖收集完毕，共聚合 ${aggregatedItems.length} 条端侧反馈！`);
-
-            // 执行安全分诊与状态持久化
-            const processedBatch = processQueueBatch(queueFile, aggregatedItems, options);
-            lastProcessedId = getLastProcessedId(lastProcessedFile);
-
-            // 适配器调度分发
-            if (adapter === 'webhook') {
-              if (options.webhookCommand) {
-                try {
-                  await execAsync(options.webhookCommand, {
-                    env: {
-                      ...process.env,
-                      FEEDBACK_COUNT: String(processedBatch.length),
-                      FEEDBACK_IDS: processedBatch.map(i => i.id).join(',')
-                    }
-                  });
-                } catch (cmdErr: any) {
-                  warn(`[!] Webhook 命令执行异常: ${cmdErr?.message}`);
-                }
-              }
-              if (options.webhookUrl) {
-                try {
-                  await fetch(options.webhookUrl, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ batch: processedBatch })
-                  });
-                } catch (netErr: any) {
-                  warn(`[!] Webhook 请求发送异常: ${netErr?.message}`);
-                }
+            if (options.webhookUrl) {
+              try {
+                await fetch(options.webhookUrl, {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({ batch: processedBatch })
+                });
+              } catch (netErr: any) {
+                warn(`[!] Webhook 请求发送异常: ${netErr?.message}`);
               }
             }
+          }
 
-            if (typeof options.onWakeup === 'function') {
-              await options.onWakeup(processedBatch, adapter);
-            }
+          if (typeof options.onWakeup === 'function') {
+            await options.onWakeup(processedBatch, adapter);
+          }
 
-            if (adapter === 'antigravity') {
-              log('[*] 🔔 触发 Antigravity 响应式任务退出唤醒机制！');
-              const shouldExit =
-                options.exitOnWakeup !== undefined
-                  ? options.exitOnWakeup
-                  : !options.onWakeup;
-              if (shouldExit) {
-                cleanup();
-                process.exit(0);
-              }
-            }
-
-            if (isOnce) {
+          if (adapter === 'antigravity') {
+            log('[*] 🔔 触发 Antigravity 响应式任务退出唤醒机制！');
+            const shouldExit =
+              options.exitOnWakeup !== undefined
+                ? options.exitOnWakeup
+                : !options.onWakeup;
+            if (shouldExit) {
               cleanup();
-              resolve();
-              return;
+              process.exit(0);
             }
+          }
+
+          if (isOnce) {
+            cleanup();
+            resolve();
+            return;
           }
         }
       } catch (err: any) {

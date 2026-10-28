@@ -1,4 +1,4 @@
-﻿import { describe, it, beforeEach, afterEach } from 'node:test';
+import { describe, it, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert';
 
 // 准备测试环境下的全局 Mocks
@@ -11,8 +11,9 @@ class MockShadowRoot {
       return this.elements.get(selector);
     }
     // 简易选择器查找
-    if (selector.startsWith('.')) {
-      const cls = selector.slice(1);
+    const cleanSelector = selector.split('[')[0];
+    if (cleanSelector.startsWith('.')) {
+      const cls = cleanSelector.slice(1);
       if (this.innerHTML.includes(`class="${cls}`) || this.innerHTML.includes(`class="tab-btn ${cls}`) || this.innerHTML.includes(cls)) {
         const el = new MockElement(selector);
         this.elements.set(selector, el);
@@ -39,6 +40,19 @@ class MockElement {
   };
   public value = '';
   public eventListeners: Record<string, Function[]> = {};
+  public attributes: Map<string, string> = new Map();
+
+  setAttribute(name: string, val: string) {
+    const old = this.attributes.get(name);
+    this.attributes.set(name, String(val));
+    if (typeof (this as any).attributeChangedCallback === 'function') {
+      (this as any).attributeChangedCallback(name, old, String(val));
+    }
+  }
+
+  getAttribute(name: string) {
+    return this.attributes.get(name) || null;
+  }
 
   constructor(tagName: string) {
     this.tagName = tagName;
@@ -119,6 +133,7 @@ Object.defineProperty(globalThis, 'navigator', {
     appendChild: (el: any) => el
   },
   querySelector: () => null,
+  querySelectorAll: () => [],
   createElement: (tag: string) => {
     if (tag === 'agent-feedback-widget') {
       const cls = customElementRegistry.get('agent-feedback-widget') || MockHTMLElement;
@@ -148,7 +163,8 @@ const {
   captureScreenshot,
   AgentFeedbackWidget,
   registerAgentFeedbackWidget,
-  autoMountWidget
+  autoMountWidget,
+  registerExtensionTab
 } = await import('../src/index.ts');
 
 describe('@agent-feedback/client Full-Spectrum Telemetry Engine', () => {
@@ -447,5 +463,155 @@ describe('@agent-feedback/client <agent-feedback-widget> Web Component', () => {
     assert.ok(widget.shadow.innerHTML.includes('已为高德瓦片添加本地 IndexedDB 缓存'));
     assert.ok(widget.shadow.innerHTML.includes('搜索栏在深色模式下背景色太刺眼'));
     assert.ok(widget.shadow.innerHTML.includes('AI 修复中'));
+  });
+
+  it('should inject Theme Token System CSS variables and support theme switching', () => {
+    const widget = new AgentFeedbackWidget();
+    widget.connectedCallback();
+
+    const html = widget.shadow.innerHTML;
+    assert.ok(html.includes('--af-primary: #4edea3'));
+    assert.ok(html.includes('--af-bg-base: #12151c'));
+    assert.ok(html.includes('--af-bg-surface: #181f2a'));
+    assert.ok(html.includes('--af-text-main: #f3f4f6'));
+    assert.ok(html.includes('--af-text-muted: #9ca3af'));
+    assert.ok(html.includes('--af-border: rgba(255, 255, 255, 0.08)'));
+    assert.ok(html.includes('--af-radius: 12px'));
+    assert.ok(html.includes(':host([theme="light"])'));
+    assert.ok(html.includes('--af-primary: #2563eb'));
+
+    // 静态方法与属性切换
+    AgentFeedbackWidget.setTheme('light');
+    assert.strictEqual(AgentFeedbackWidget.getTheme(), 'light');
+
+    widget.setAttribute('theme', 'dark');
+    assert.strictEqual(widget.getAttribute('theme'), 'dark');
+    AgentFeedbackWidget.setTheme('dark');
+  });
+
+  it('should render streaming timeline UI grouped by date with notice card highlight and pagination', async () => {
+    (globalThis as any).fetch = async (url: string) => {
+      if (url === '/api/__agent_feedback/dates') {
+        return {
+          ok: true,
+          json: async () => ({
+            dates: ['2026-10-28', '2026-10-27'],
+            totalCount: 3,
+            latestDate: '2026-10-28'
+          })
+        };
+      }
+      if (url.includes('date=2026-10-28') || url === '/api/__agent_feedback/list') {
+        return {
+          ok: true,
+          json: async () => [
+            {
+              id: 2001,
+              type: 'user_feedback',
+              content: '今日地图瓦片模糊',
+              status: 'pending',
+              receivedAt: '2026-10-28T09:00:00.000Z',
+              date: '2026-10-28'
+            },
+            {
+              id: 2002,
+              type: 'agent_notice',
+              content: 'Agent 修复通知：已切换高分瓦片服务',
+              status: 'completed',
+              reply: '已自动部署',
+              receivedAt: '2026-10-28T10:00:00.000Z',
+              date: '2026-10-28'
+            }
+          ]
+        };
+      }
+      if (url.includes('date=2026-10-27')) {
+        return {
+          ok: true,
+          json: async () => [
+            {
+              id: 1999,
+              type: 'user_feedback',
+              content: '昨日离线包下载中断',
+              status: 'completed',
+              receivedAt: '2026-10-27T15:00:00.000Z',
+              date: '2026-10-27'
+            }
+          ]
+        };
+      }
+      return { ok: false };
+    };
+
+    const widget = new AgentFeedbackWidget();
+    widget.connectedCallback();
+    widget.setTab('history');
+    await widget.loadHistory();
+
+    const html = widget.shadow.innerHTML;
+    // 验证时间轴元素
+    assert.ok(html.includes('timeline-day-group'));
+    assert.ok(html.includes('timeline-dot'));
+    assert.ok(html.includes('timeline-v-line'));
+    assert.ok(html.includes('2026-10-28'));
+    assert.ok(html.includes('当日共 2 条'));
+
+    // 验证 Agent 系统通知高光卡片与徽章
+    assert.ok(html.includes('card-agent-notice'));
+    assert.ok(html.includes('🤖 Agent 系统通知'));
+    assert.ok(html.includes('Agent 修复通知：已切换高分瓦片服务'));
+
+    // 验证加载前一天记录按钮
+    assert.ok(html.includes('btn-load-previous-day'));
+    assert.ok(html.includes('2026-10-27'));
+
+    // 点击加载前一天记录
+    await widget.loadPreviousDay();
+    const updatedHtml = widget.shadow.innerHTML;
+    assert.ok(updatedHtml.includes('2026-10-27'));
+    assert.ok(updatedHtml.includes('昨日离线包下载中断'));
+  });
+
+  it('should support extension tabs API with dynamic header tabs, container render, and lifecycle cleanup', () => {
+    let cleanupCalled = false;
+    let renderContext: any = null;
+    let renderContainer: any = null;
+
+    registerExtensionTab({
+      id: 'custom-diagnostics',
+      label: '设备诊断',
+      icon: '🩺',
+      badge: 5,
+      render: (container, context) => {
+        renderContainer = container;
+        renderContext = context;
+        return () => {
+          cleanupCalled = true;
+        };
+      }
+    });
+
+    const widget = new AgentFeedbackWidget();
+    widget.connectedCallback();
+    widget.toggleModal(true);
+
+    // 验证 Header 动态渲染了自定义 Tab
+    const html = widget.shadow.innerHTML;
+    assert.ok(html.includes('tab-btn-custom-diagnostics'));
+    assert.ok(html.includes('设备诊断'));
+    assert.ok(html.includes('🩺'));
+    assert.ok(html.includes('5'));
+
+    // 切换至自定义 Tab
+    widget.setTab('custom-diagnostics');
+    assert.ok(widget.shadow.innerHTML.includes('ext-tab-container'));
+    assert.ok(widget.shadow.innerHTML.includes('data-tab-id="custom-diagnostics"'));
+    assert.ok(renderContainer, 'Container should be passed to render');
+    assert.strictEqual(typeof renderContext.closeModal, 'function');
+    assert.strictEqual(typeof renderContext.openTab, 'function');
+
+    // 切换离开时触发清理函数
+    widget.setTab('submit');
+    assert.strictEqual(cleanupCalled, true, 'Extension cleanup should be invoked when tab switches');
   });
 });

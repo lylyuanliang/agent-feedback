@@ -1,4 +1,4 @@
-﻿import { describe, it } from 'node:test';
+import { describe, it } from 'node:test';
 import assert from 'node:assert';
 import {
   sanitizeFeedbackContent,
@@ -8,7 +8,12 @@ import {
   type ViewportSnapshot,
   type ConsoleLogEntry,
   type TelemetrySnapshot,
-  type SecurityTriageResult
+  type SecurityTriageResult,
+  type FeedbackType,
+  type FeedbackDateIndex,
+  type ExtensionContext,
+  type FeedbackExtensionTab,
+  type FeedbackTheme
 } from '../src/index.ts';
 
 describe('@agent-feedback/core protocol & schema', () => {
@@ -63,6 +68,96 @@ describe('@agent-feedback/core protocol & schema', () => {
     assert.strictEqual(minimal.reply, undefined);
     assert.strictEqual(minimal.screenshots, undefined);
     assert.strictEqual(minimal.consoleLogs, undefined);
+  });
+
+  it('should support FeedbackType, date field and agent_notice typing', () => {
+    const userFb: InAppFeedback = {
+      id: 101,
+      type: 'user_feedback',
+      date: '2026-10-28',
+      timestamp: Date.now(),
+      receivedAt: new Date().toISOString(),
+      content: '测试反馈工单类型',
+      status: 'pending',
+      telemetry: {
+        route: '/',
+        viewport: { width: 375, height: 667, dpr: 2 },
+        userAgent: 'test',
+        platform: 'web'
+      }
+    };
+    assert.strictEqual(userFb.type, 'user_feedback');
+    assert.strictEqual(userFb.date, '2026-10-28');
+
+    const notice: InAppFeedback = {
+      id: 102,
+      type: 'agent_notice',
+      date: '2026-10-28',
+      timestamp: Date.now(),
+      receivedAt: new Date().toISOString(),
+      content: 'Agent 修复通知：已重构高山拓扑视图',
+      status: 'completed',
+      reply: '已自动热更新部署',
+      telemetry: {
+        route: '/cli',
+        viewport: { width: 0, height: 0, dpr: 1 },
+        userAgent: 'agent-sentinel',
+        platform: 'desktop'
+      }
+    };
+    assert.strictEqual(notice.type, 'agent_notice');
+    assert.strictEqual(notice.status, 'completed');
+  });
+
+  it('should validate FeedbackDateIndex structure', () => {
+    const index: FeedbackDateIndex = {
+      dates: ['2026-10-28', '2026-10-27'],
+      totalCount: 42,
+      updatedAt: '2026-10-28T10:00:00.000Z'
+    };
+    assert.strictEqual(index.dates.length, 2);
+    assert.strictEqual(index.dates[0], '2026-10-28');
+    assert.strictEqual(index.totalCount, 42);
+  });
+
+  it('should validate FeedbackExtensionTab and ExtensionContext definitions', () => {
+    let closed = false;
+    let openedTab = '';
+    const ctx: ExtensionContext = {
+      closeModal: () => { closed = true; },
+      openTab: (id: string) => { openedTab = id; },
+      theme: 'dark'
+    };
+
+    let renderedContent = '';
+    const extTab: FeedbackExtensionTab = {
+      id: 'perf-monitor',
+      label: '性能监控',
+      icon: '📊',
+      badge: 3,
+      render: (container, context) => {
+        renderedContent = `rendered with theme ${context.theme}`;
+        return () => { renderedContent = 'cleaned'; };
+      }
+    };
+
+    assert.strictEqual(extTab.id, 'perf-monitor');
+    assert.strictEqual(extTab.label, '性能监控');
+    assert.strictEqual(extTab.badge, 3);
+    const cleanup = extTab.render({} as HTMLElement, ctx);
+    assert.strictEqual(renderedContent, 'rendered with theme dark');
+    if (typeof cleanup === 'function') cleanup();
+    assert.strictEqual(renderedContent, 'cleaned');
+
+    ctx.closeModal();
+    assert.strictEqual(closed, true);
+    ctx.openTab('history');
+    assert.strictEqual(openedTab, 'history');
+  });
+
+  it('should support FeedbackTheme type values', () => {
+    const themes: FeedbackTheme[] = ['dark', 'light', 'auto'];
+    assert.strictEqual(themes.length, 3);
   });
 });
 
