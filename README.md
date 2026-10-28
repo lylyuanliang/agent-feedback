@@ -181,8 +181,8 @@ npx agent-feedback watch --dir scratch/feedback --adapter antigravity
 # 2. 向端侧时间轴主动插入一条 Agent 系统通知 (支持 CI/CD 或任务完成后自动调用)
 npx agent-feedback notice "🎉 新版本已部署，修复了详情页图片偶发白屏问题，请在手机端复验。" --dir scratch/feedback
 
-# 3. 更新工单状态并写入自愈说明
-npx agent-feedback update-status 1793175462520 completed "经排查已修复兼容路由，历史记录恢复正常。" --dir scratch/feedback
+# 3. 更新工单状态并写入自愈说明 (闭环通知端侧)
+npx agent-feedback update-status <feedback-id> completed "经排查问题已修复并在当前版本生效，请在端侧下拉刷新验证。" --dir scratch/feedback
 ```
 
 ---
@@ -194,13 +194,14 @@ npx agent-feedback update-status 1793175462520 completed "经排查已修复兼�
 - 🔗 **参考工程 GitHub 仓库**：[lylyuanliang/weekly-mountain](https://github.com/lylyuanliang/weekly-mountain)
 - 🌿 **完整接入代码分支**：[`feat/integrate-agent-feedback`](https://github.com/lylyuanliang/weekly-mountain/tree/feat/integrate-agent-feedback)
 
-### 每周一山接入架构亮点
-1. **职责正交解耦**：
-   在 [`vite.config.js`](https://github.com/lylyuanliang/weekly-mountain/blob/feat/integrate-agent-feedback/vite.config.js) 中，每周一山将业务专有的 Android 原生 APK 安装包流式下载、断点续传（`GET /releases/*`）与内测更新检查（`GET /api/app-update`）保留在独立的轻量插件中，而将所有的真机现场抓取、日级分片落盘与哨兵唤醒彻底委托给 `agentFeedback()` 插件。
-2. **扩展槽实战落地**：
-   通过 [`src/debug/setupAgentFeedback.js`](https://github.com/lylyuanliang/weekly-mountain/blob/feat/integrate-agent-feedback/src/debug/setupAgentFeedback.js) 调用 `registerExtensionTab`，将内测 APK 一键极速流式下载、进度展示、WakeLock 切屏防中断以及局域网穿透诊断无缝注入到悬浮模态框的第 3 个 Tab（`🛠️ 联调与更新`），手机屏幕上只有一个悬浮胶囊即可纵览全部开发者能力。
-3. **老版本平滑契约保真**：
-   在后端中间件中实现了向前兼容适配，即便用户手机上运行的是尚未升级的旧版安装包，访问 `/api/feedback` 时也能自动聚合日级分片并以兼容结构下发，确保线上公测历史记录 100% 不丢失。
+### 架构落地与最佳实践亮点
+
+1. **职责正交解耦 (Clean Separation of Concerns)**：
+   在宿主工程的 [`vite.config.js`](https://github.com/lylyuanliang/weekly-mountain/blob/feat/integrate-agent-feedback/vite.config.js) 中，业务专属的构建逻辑与服务（如业务发布下载、离线包、特定 API Mock 等）保持在独立的轻量插件中，而将所有的真机现场抓取、日级分片落盘与哨兵唤醒彻底委托给 `agentFeedback()` 插件，实现极高内聚与清晰解耦。
+2. **统一开发者入口与扩展槽 (Unified Developer Hub via Extension Tabs)**：
+   通过 [`src/debug/setupAgentFeedback.js`](https://github.com/lylyuanliang/weekly-mountain/blob/feat/integrate-agent-feedback/src/debug/setupAgentFeedback.js) 调用 `registerExtensionTab`，将应用专属的内测在线更新、下载进度展示、WakeLock 切屏防中断以及局域网穿透诊断等能力无缝注入为同一个悬浮模态框的自定义 Tab（`🛠️ 联调与更新`），手机屏幕上只有一个悬浮胶囊即可纵览全部开发者能力，彻底避免多悬浮球相互遮挡。
+3. **沉浸式主题系统融合 (Design System Integration)**：
+   展示了在强风格化的暗黑拓扑应用中，如何仅通过配置主题模式（`theme: 'dark'`、`primaryColor: '#4edea3'`）并声明基础 CSS Token，使悬浮组件与宿主既有的黑曜石半透明高山设计系统融为一体，保持专业一致的视觉体验。
 
 ---
 
