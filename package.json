@@ -1,0 +1,26 @@
+﻿{
+  "name": "agent-feedback-monorepo",
+  "version": "1.0.0",
+  "private": true,
+  "description": "The In-App Nervous System & Live Loop for AI Coding Agents",
+  "scripts": {
+    "build": "pnpm -r run build",
+    "test": "pnpm -r run test",
+    "lint": "pnpm -r run lint"
+  },
+  "keywords": [
+    "ai",
+    "coding-agent",
+    "antigravity",
+    "cursor",
+    "mcp",
+    "feedback",
+    "telemetry",
+    "in-app-feedback"
+  ],
+  "author": "Antigravity Pair",
+  "license": "MIT",
+  "devDependencies": {
+    "typescript": "^5.6.3"
+  }
+}

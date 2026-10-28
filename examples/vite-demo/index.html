@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Agent Feedback Bridge - Vite Demo Playground</title>
+    <style>
+      :root {
+        --bg-primary: #0b0f17;
+        --card-bg: #111827;
+        --border-color: #1f2937;
+        --text-primary: #f3f4f6;
+        --text-secondary: #9ca3af;
+        --accent-emerald: #10b981;
+      }
+      body {
+        margin: 0;
+        min-height: 100vh;
+        background-color: var(--bg-primary);
+        color: var(--text-primary);
+        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+      }
+      .card {
+        background: var(--card-bg);
+        border: 1px solid var(--border-color);
+        border-radius: 12px;
+        padding: 2.5rem;
+        max-width: 520px;
+        box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.5);
+        text-align: center;
+      }
+      h1 {
+        font-size: 1.75rem;
+        margin-top: 0;
+        margin-bottom: 0.75rem;
+        color: var(--text-primary);
+      }
+      p {
+        color: var(--text-secondary);
+        line-height: 1.6;
+        margin-bottom: 1.5rem;
+      }
+      .badge {
+        display: inline-block;
+        padding: 0.25rem 0.75rem;
+        border-radius: 9999px;
+        background: rgba(16, 185, 129, 0.15);
+        color: var(--accent-emerald);
+        font-size: 0.875rem;
+        font-weight: 500;
+        margin-bottom: 1.25rem;
+      }
+      button {
+        background: var(--accent-emerald);
+        color: #000;
+        border: none;
+        padding: 0.75rem 1.5rem;
+        border-radius: 8px;
+        font-weight: 600;
+        cursor: pointer;
+        transition: opacity 0.2s;
+      }
+      button:hover {
+        opacity: 0.9;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="app">
+      <div class="card">
+        <div class="badge">🏔️ Alpine Explorer · In-App Nervous System</div>
+        <h1>Agent Feedback Playground</h1>
+        <p>Vite 集成验证应用：实时捕获端侧控制台日志、视口遥测与移动端真机反馈。</p>
+        <button id="test-log-btn">生成测试日志 (Log Activity)</button>
+      </div>
+    </div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
