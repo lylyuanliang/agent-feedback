@@ -401,7 +401,7 @@ export class AgentFeedbackWidget extends CustomElementBase {
 
   // 表单状态
   private feedbackContent = '';
-  private attachedScreenshot: string | null = null;
+  private attachedScreenshots: string[] = [];
   private isSubmitting = false;
   private submitFeedbackMessage: { type: 'success' | 'error'; text: string } | null = null;
 
@@ -673,7 +673,7 @@ export class AgentFeedbackWidget extends CustomElementBase {
         status: 'pending',
         telemetry,
         consoleLogs,
-        ...(this.attachedScreenshot ? { screenshots: [this.attachedScreenshot] } : {})
+        ...(this.attachedScreenshots.length > 0 ? { screenshots: this.attachedScreenshots } : {})
       };
 
       const res = await fetch(this.getApiUrl('/api/__agent_feedback/submit'), {
@@ -694,7 +694,7 @@ export class AgentFeedbackWidget extends CustomElementBase {
       }
 
       this.feedbackContent = '';
-      this.attachedScreenshot = null;
+      this.attachedScreenshots = [];
       this.submitFeedbackMessage = {
         type: 'success',
         text: '反馈已递交！AI Agent 哨兵将在 10 秒防抖后自动唤醒分析修复。'
@@ -969,36 +969,57 @@ export class AgentFeedbackWidget extends CustomElementBase {
     const captureBtn = this.shadow.querySelector?.('.btn-capture-screen');
     if (captureBtn) {
       captureBtn.addEventListener?.('click', async () => {
+        if (this.attachedScreenshots.length >= 6) return;
         const shot = await captureScreenshot();
         if (shot) {
-          this.attachedScreenshot = shot;
+          this.attachedScreenshots.push(shot);
           this.render();
           this.bindEvents();
         }
       });
     }
 
-    const removeShotBtn = this.shadow.querySelector?.('.btn-remove-shot');
-    if (removeShotBtn) {
-      removeShotBtn.addEventListener?.('click', () => {
-        this.attachedScreenshot = null;
-        this.render();
-        this.bindEvents();
+    const removeShotBtns = this.shadow.querySelectorAll?.('.btn-remove-shot');
+    removeShotBtns?.forEach((btn: any) => {
+      btn.addEventListener?.('click', (e: Event) => {
+        e.stopPropagation();
+        const idxStr = btn.getAttribute?.('data-index');
+        const idx = parseInt(idxStr || '0', 10);
+        if (!isNaN(idx) && idx >= 0 && idx < this.attachedScreenshots.length) {
+          this.attachedScreenshots.splice(idx, 1);
+          this.render();
+          this.bindEvents();
+        }
       });
-    }
+    });
 
     const fileInput = this.shadow.querySelector?.('.screenshot-file-input') as HTMLInputElement;
     if (fileInput) {
-      fileInput.addEventListener?.('change', () => {
-        if (fileInput.files && fileInput.files[0]) {
-          const reader = new FileReader();
-          reader.onload = (e) => {
-            this.attachedScreenshot = e.target?.result as string;
-            this.render();
-            this.bindEvents();
-          };
-          reader.readAsDataURL(fileInput.files[0]);
+      fileInput.addEventListener?.('change', async () => {
+        const files = Array.from(fileInput.files || []);
+        if (files.length === 0) return;
+
+        const remaining = Math.max(0, 6 - this.attachedScreenshots.length);
+        const filesToRead = files.slice(0, remaining);
+
+        for (const file of filesToRead) {
+          try {
+            const dataUrl = await new Promise<string>((resolve, reject) => {
+              const reader = new FileReader();
+              reader.onload = (e) => resolve(e.target?.result as string);
+              reader.onerror = reject;
+              reader.readAsDataURL(file);
+            });
+            if (dataUrl) {
+              this.attachedScreenshots.push(dataUrl);
+            }
+          } catch (err) {
+            console.error('[agent-feedback] Failed to read screenshot file:', err);
+          }
         }
+
+        this.render();
+        this.bindEvents();
       });
     }
   }
@@ -1466,33 +1487,54 @@ export class AgentFeedbackWidget extends CustomElementBase {
           color: var(--af-text-main, #fff);
         }
 
-        .screenshot-preview {
+        .screenshot-grid {
+          display: flex;
+          flex-wrap: wrap;
+          gap: 10px;
+          margin-top: 12px;
+        }
+
+        .screenshot-item {
           position: relative;
-          margin-top: 10px;
-          display: inline-block;
-          border: 1px solid var(--af-border, #283040);
-          border-radius: 6px;
+          width: 72px;
+          height: 72px;
+          border-radius: 8px;
           overflow: hidden;
+          border: 1px solid var(--af-border, #283040);
+          background: #000;
+          flex-shrink: 0;
         }
 
         .screenshot-img {
           display: block;
-          max-width: 100%;
-          max-height: 160px;
+          width: 100%;
+          height: 100%;
           object-fit: cover;
         }
 
         .btn-remove-shot {
           position: absolute;
-          top: 4px;
-          right: 4px;
-          background: rgba(0, 0, 0, 0.7);
+          top: 3px;
+          right: 3px;
+          width: 20px;
+          height: 20px;
+          border-radius: 50%;
+          background: rgba(0, 0, 0, 0.75);
           color: #ef4444;
-          border: none;
-          border-radius: 4px;
-          padding: 2px 6px;
+          border: 1px solid rgba(255, 255, 255, 0.2);
+          display: flex;
+          align-items: center;
+          justify-content: center;
           cursor: pointer;
           font-size: 11px;
+          line-height: 1;
+          padding: 0;
+          transition: background 0.15s ease;
+        }
+
+        .btn-remove-shot:hover {
+          background: #ef4444;
+          color: #fff;
         }
 
         /* 提示信息 */
@@ -1818,21 +1860,38 @@ export class AgentFeedbackWidget extends CustomElementBase {
                   >${this.feedbackContent}</textarea>
                 </div>
 
-                <!-- 截图附件 -->
+                <!-- 截图附件 (支持多张上传，最多 6 张) -->
                 <div class="screenshot-section">
                   <div class="screenshot-actions">
-                    <button class="btn-secondary btn-capture-screen">📸 截取当前界面</button>
-                    <label class="btn-secondary" style="margin: 0; cursor: pointer;">
-                      📁 上传本地截图
-                      <input type="file" accept="image/*" class="screenshot-file-input" style="display: none;" />
+                    <button class="btn-secondary btn-capture-screen" ${this.attachedScreenshots.length >= 6 ? 'disabled' : ''}>
+                      📸 截取当前界面
+                    </button>
+                    <label class="btn-secondary ${this.attachedScreenshots.length >= 6 ? 'disabled' : ''}" style="margin: 0; cursor: pointer;">
+                      📁 上传本地截图 ${this.attachedScreenshots.length > 0 ? `(${this.attachedScreenshots.length}/6)` : ''}
+                      <input
+                        type="file"
+                        accept="image/*"
+                        multiple
+                        class="screenshot-file-input"
+                        style="display: none;"
+                        ${this.attachedScreenshots.length >= 6 ? 'disabled' : ''}
+                      />
                     </label>
                   </div>
                   ${
-                    this.attachedScreenshot
+                    this.attachedScreenshots.length > 0
                       ? `
-                    <div class="screenshot-preview">
-                      <img src="${this.attachedScreenshot}" class="screenshot-img" alt="截图预览" />
-                      <button class="btn-remove-shot" title="删除截图">✕ 移除</button>
+                    <div class="screenshot-grid">
+                      ${this.attachedScreenshots
+                        .map(
+                          (shot, idx) => `
+                        <div class="screenshot-item">
+                          <img src="${shot}" class="screenshot-img" alt="截图预览 ${idx + 1}" />
+                          <button class="btn-remove-shot" data-index="${idx}" title="移除此截图">✕</button>
+                        </div>
+                      `
+                        )
+                        .join('')}
                     </div>
                   `
                       : ''
