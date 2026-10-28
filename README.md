@@ -29,6 +29,83 @@
 
 ---
 
+## 🔄 端到端自愈工作闭环流程 (End-to-End Self-Healing Workflow)
+
+Agent Feedback Bridge 不仅是一个前端悬浮组件，而是一套连接**移动真机端侧运行现场**与**开发机本地 AI Coding Agent** 的完整自动化闭环神经系统。整个生命周期涵盖 5 大阶段：
+
+```
+┌───────────────────────────────────────────────────────────────────────────┐
+│ 1. 应用极简接入 (Host App Integration)                                     │
+│    vite.config.ts 引入插件 ──(DEV 模式自动注入)──> 磁吸悬浮胶囊一键挂载     │
+│    生产构建 (vite build) ──(100% Zero-DCE)──> 物理剥离 0 字节残留         │
+└─────────────────────────────────────┬─────────────────────────────────────┘
+                                      │
+                                      ▼
+┌───────────────────────────────────────────────────────────────────────────┐
+│ 2. 端侧全息现场抓取 (Holographic In-App Capture)                          │
+│    手机真机轻触胶囊 ──> 自动截取高保真视觉现场 (html2canvas)               │
+│                     ──> 自动抓取当前路由、设备 DPR、视口、Console 日志     │
+│                     ──> 用户补充简短描述/圈选 ──> 打包提交至 DevServer     │
+└─────────────────────────────────────┬─────────────────────────────────────┘
+                                      │
+                                      ▼
+┌───────────────────────────────────────────────────────────────────────────┐
+│ 3. 日级分片落盘与哨兵防抖唤醒 (Sharded Storage & Sentinel Debounce)        │
+│    Connect 中间件 ──> 安全校验 ──> 写入 scratch/feedback/feedback_日期.json │
+│    后台静默哨兵 (0% CPU, 0 Token) 捕获新工单 ──> 开启 10 秒防抖聚合倒计时  │
+│    (将用户连续追加的多张截图/补充说明归并为单个工单批次)                    │
+│    倒计时结束 ──> 触发适配器 ──> 自动唤醒 IDE 中的 AI Coding Agent        │
+└─────────────────────────────────────┬─────────────────────────────────────┘
+                                      │
+                                      ▼
+┌───────────────────────────────────────────────────────────────────────────┐
+│ 4. Coding Agent 源码自愈与状态回写 (Agent Reasoning & Code Repair)         │
+│    AI Agent 读取工单全息现场 (截图/报错栈/路由) ──> 自主定位源码 Bug       │
+│    针对性修改代码 ──> 执行单元/端到端自动化测试验证通过                   │
+│    调用 CLI 回写工单状态:                                                 │
+│    npx agent-feedback update-status <id> completed "修复说明"             │
+│    (可选) 向端侧主动推送发版通知: npx agent-feedback notice "新版本已发布"│
+└─────────────────────────────────────┬─────────────────────────────────────┘
+                                      │
+                                      ▼
+┌───────────────────────────────────────────────────────────────────────────┐
+│ 5. 端侧时间轴复验与体验闭环 (Timeline Real-time Verification)             │
+│    Vite HMR 热更新 / 本地构建部署 ──> 手机端页面实时更新                   │
+│    用户打开胶囊「历史与进度」时间轴 ──> 即时看到工单变为绿色 "completed"   │
+│    查看 Agent 填写的详细自愈报告 ──> 在真机上实测复验，形成完美自愈闭环   │
+└───────────────────────────────────────────────────────────────────────────┘
+```
+
+### 闭环流程各阶段职责详解
+
+1. **第 1 阶段：应用极简接入 (Host App Integration)**
+   - **0 业务侵入**：开发者仅需在宿主应用的 `vite.config.ts` 中注册 `agentFeedback()` 插件，无需修改任何业务页面或组件代码；
+   - **自动化挂载**：在开发模式下，插件会自动将 `@agent-feedback/client` 注入到 HTML 入口中，自挂载 `<agent-feedback-widget>` 悬浮胶囊；
+   - **生产零污染 (Zero-DCE)**：执行正式打包（`vite build`）时，插件内部配置了 Rollup 虚拟外部化策略，所有组件代码与调试接口 100% 物理消除，生产产物增加 0 字节。
+
+2. **第 2 阶段：端侧全息现场抓取 (Holographic In-App Capture)**
+   - **现场视觉还原**：用户在手机真机或 Web 端点击悬浮胶囊呼出模态框时，组件自动调用 `html2canvas` 捕获当前屏幕的高保真图像（支持长图/高清 DPR 自适应）；
+   - **全息元数据自动装配**：自动提取端侧当前页面路由（Hash/History Path）、设备视口尺寸、屏幕像素比（DPR）、网络类型及最近 20 条 Console 报错与警告栈，彻底告别“截屏后手动描述环境”的低效沟通。
+
+3. **第 3 阶段：日级分片落盘与哨兵防抖唤醒 (Sharded Storage & Sentinel Debounce)**
+   - **项目内同源存储**：工单提交至宿主 DevServer 的内置中间件，中间件校验安全防注入规则后，按日期归档至本地 `scratch/feedback/feedback_YYYY-MM-DD.json` 并维护增量索引；
+   - **0 Token 哨兵守候**：后台守护进程（`npx agent-feedback watch`）平时处于纯休眠状态，不调用大模型 API，0% 资源开销；
+   - **10 秒防抖聚合**：检测到第 1 条新反馈后，自动开启 10 秒倒计时聚合窗口，将测试人员连续连发的数张补充截图与追评聚合成同一结构化工单，窗口结束后触发通知主动唤醒 IDE 中的 Coding Agent。
+
+4. **第 4 阶段：Coding Agent 源码自愈与状态回写 (Agent Reasoning & Code Repair)**
+   - **上下文深度感知**：本地被唤醒的 Coding Agent（如 Antigravity、Claude Code、Cursor 等）直接从分片文件中读取工单，结合精准的文件源码与报错堆栈，自主推理根因并进行代码热修复；
+   - **测试驱动交付**：Agent 修改代码后运行本地测试，确认修复无误后，通过哨兵 CLI 命令行：
+     ```bash
+     npx agent-feedback update-status 1793175462520 completed "已重构事件监听逻辑，修复了移动端手势冲突问题。"
+     ```
+     将工单状态置为 `completed` 并写入技术自愈说明。
+
+5. **第 5 阶段：端侧时间轴复验与体验闭环 (Timeline Real-time Verification)**
+   - **双向流式透传**：端侧用户无需重启应用，只需在悬浮窗中切换至「历史与进度」Tab，即可在时间轴上看到自己刚才提交的工单已变为绿色“已解决”卡片，并能直接阅读 AI Agent 回写的修改详情；
+   - **系统级主动通知**：除工单自愈外，Agent 或 CI 流水线还可通过 `npx agent-feedback notice "新包已推送到内测通道"` 主动向时间轴插入高亮系统公告，实现从“端侧上报”到“AI 修复”再到“端侧回传”的完整生命周期。
+
+---
+
 ## ✨ 核心特性
 
 - 🚀 **0 侵入一行接入 (Zero-Code DX)**：只需在 `vite.config.ts` 加入插件，业务代码无需修改即可自动在页面挂载磁吸胶囊。
@@ -99,6 +176,71 @@ npm run dev
 
 # 终端 2：启动 AI 哨兵守候 (当收到端侧反馈时自动防抖并唤醒 IDE 中的 Agent)
 npx agent-feedback watch --dir scratch/feedback
+```
+
+---
+
+## 🌐 真机联调与网络互通指南 (Mobile Device & Networking Guide)
+
+Agent Feedback Bridge 的核心理念是让 AI Coding Agent 能够直接感知**移动端真机运行现场**。由于 AI Agent 运行在开发者的电脑 IDE 中，端侧（手机/平板/外部设备）必须能够访问到开发机的 DevServer 接口。
+
+### 1. 默认服务机制 (0 独立后端，同源内置)
+
+- `@agent-feedback/vite-plugin` 采用标准 Connect 中间件机制，**直接无缝挂载在宿主项目自身的 Vite DevServer 实例上**（无需额外启动独立后端服务、数据库或占用额外端口）；
+- 默认情况下，端侧客户端（`<agent-feedback-widget>`）发出的所有工单请求均采用**同源相对路径**（`/api/__agent_feedback/*`），默认自然请求到**当前项目自己的服务地址**。
+
+### 2. 多端测试网络拓扑矩阵
+
+| 测试场景 | 端侧访问地址 | DevServer 网络配置 | `apiBase` 配置需求 |
+| :--- | :--- | :--- | :--- |
+| **A. 本地电脑桌面浏览器** | `http://localhost:5173` | 默认 `localhost` 即可 | **无需配置**（自动同源请求） |
+| **B. 同一局域网 Wi-Fi 真机测试** | `http://192.168.x.x:5173` | 配置 `server: { host: true }` | **无需配置**（手机打开局域网网页，自动同源请求） |
+| **C. 远程外网 / 4G / 5G 移动流量公测** | `https://xxxx.cpolar.top` | 使用 cpolar / ngrok 内网穿透 | **无需配置**（手机通过穿透域名访问网页，自动同源） |
+| **D. 移动端混合原生 App (Capacitor/Cordova/Tauri)** | `capacitor://localhost` (离线内置包) | 开发机启动穿透或局域网服务 | **必须显式配置 `apiBase`**（指向开发机穿透地址） |
+
+### 3. 外网穿透暴露服务 (以 cpolar / ngrok 为例)
+
+当测试人员在室外走测，或手机使用移动蜂窝流量（4G/5G）不在同一 Wi-Fi 下时，可通过内网穿透工具将本机的 Vite DevServer 暴露至公网：
+
+```bash
+# 方式 1: 使用 cpolar (国内极速)
+cpolar http 5173
+# 输出: Forwarding -> https://7a3bxxxx.cpolar.top -> http://localhost:5173
+
+# 方式 2: 使用 ngrok
+ngrok http 5173
+
+# 方式 3: 使用 Cloudflare Tunnel (免费免客户端)
+cloudflared tunnel --url http://localhost:5173
+```
+
+将穿透生成的 HTTPS 公网域名（如 `https://7a3bxxxx.cpolar.top`）发送给手机打开，即可直接在真机上体验一键截屏反馈与 AI 哨兵自愈闭环！
+
+### 4. 移动原生 App / 离线包指定 `apiBase` 姿势
+
+在 Capacitor、Cordova、React Native WebView 或 Tauri 等混合原生应用中，Webview 页面加载自手机本地离线资产目录（如 `http://localhost` 或 `capacitor://localhost`），相对路径无法触达电脑端。此时可通过以下 3 种方式之一注入外部基地址：
+
+#### 方式 A: 在 `vite.config.ts` 插件中配置 (推荐)
+```typescript
+agentFeedback({
+  storageDir: 'scratch/feedback',
+  apiBase: 'https://7a3bxxxx.cpolar.top' // 声明远程开发机穿透地址
+})
+```
+
+#### 方式 B: 运行时代码动态配置 (支持环境切换或用户配置面板)
+```typescript
+import { setApiBase } from '@agent-feedback/client';
+
+// 当检测到原生容器或用户在调试设置中输入穿透地址时动态切换
+if (window.Capacitor?.isNativePlatform()) {
+  setApiBase('https://7a3bxxxx.cpolar.top');
+}
+```
+
+#### 方式 C: 挂载时通过 HTML 自定义标签属性声明
+```html
+<agent-feedback-widget api-base="https://7a3bxxxx.cpolar.top"></agent-feedback-widget>
 ```
 
 ---

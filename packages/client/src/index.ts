@@ -55,6 +55,66 @@ export function registerExtensionTab(tab: FeedbackExtensionTab): void {
   }
 }
 
+/**
+ * 设置全域 API 基地址 (用于移动端真机、内网穿透或原生容器环境)
+ */
+export function setApiBase(url: string): void {
+  if (typeof window === 'undefined') return;
+  const clean = (url || '').trim().replace(/\/+$/, '');
+  (window as any).__AGENT_FEEDBACK_API_BASE__ = clean;
+
+  if (typeof document !== 'undefined' && typeof document.querySelectorAll === 'function') {
+    const widgets = document.querySelectorAll('agent-feedback-widget');
+    widgets.forEach((w: any) => {
+      if (typeof (w as any).setApiBase === 'function') {
+        (w as any).setApiBase(clean);
+      }
+    });
+  }
+}
+
+/**
+ * 获取当前配置的 API 基地址
+ */
+export function getApiBase(): string {
+  if (typeof window !== 'undefined' && (window as any).__AGENT_FEEDBACK_API_BASE__) {
+    return (window as any).__AGENT_FEEDBACK_API_BASE__;
+  }
+  return '';
+}
+
+/**
+ * 编程范式呼出反馈弹窗
+ */
+export function openFeedbackModal(tab: 'submit' | 'history' | string = 'submit'): void {
+  if (typeof document === 'undefined') return;
+  const widget = document.querySelector('agent-feedback-widget') as any;
+  if (widget) {
+    if (typeof widget.toggleModal === 'function') {
+      widget.toggleModal(true);
+    }
+    if (typeof widget.setTab === 'function') {
+      widget.setTab(tab);
+    }
+  }
+}
+
+/**
+ * 编程范式关闭反馈弹窗
+ */
+export function closeFeedbackModal(): void {
+  if (typeof document === 'undefined') return;
+  const widget = document.querySelector('agent-feedback-widget') as any;
+  if (widget && typeof widget.toggleModal === 'function') {
+    widget.toggleModal(false);
+  }
+}
+
+if (typeof window !== 'undefined') {
+  (window as any).openAgentFeedbackModal = openFeedbackModal;
+  (window as any).closeAgentFeedbackModal = closeFeedbackModal;
+}
+
 // 内存中的控制台日志环形缓冲区 (最大 30 条)
 const MAX_LOGS = 30;
 const logRingBuffer: ConsoleLogEntry[] = [];
@@ -319,10 +379,11 @@ export class AgentFeedbackWidget extends CustomElementBase {
   }
 
   static get observedAttributes() {
-    return ['theme'];
+    return ['theme', 'primary-color', 'api-base'];
   }
 
   public shadow: ShadowRoot;
+  public apiBase: string = '';
   private isOpen = false;
   private activeTab: string = 'submit';
   private hasProcessingItems = false;
@@ -364,14 +425,35 @@ export class AgentFeedbackWidget extends CustomElementBase {
   }
 
   attributeChangedCallback(name: string, oldValue: string, newValue: string) {
-    if (name === 'theme' && oldValue !== newValue) {
+    if (oldValue === newValue) return;
+    if (name === 'theme') {
       this.render();
       this.bindEvents();
+    } else if (name === 'primary-color') {
+      if ((this as any).style) {
+        (this as any).style.setProperty('--af-primary', newValue || '#4edea3');
+      }
+    } else if (name === 'api-base') {
+      this.apiBase = (newValue || '').trim().replace(/\/+$/, '');
+      this.fetchHistoryQuickStatus();
     }
   }
 
+  public setApiBase(url: string) {
+    this.apiBase = (url || '').trim().replace(/\/+$/, '');
+    this.fetchHistoryQuickStatus();
+  }
+
+  public getApiUrl(endpoint: string): string {
+    const base = this.apiBase || getApiBase();
+    if (!base) return endpoint;
+    const cleanBase = base.replace(/\/+$/, '');
+    const cleanPath = endpoint.startsWith('/') ? endpoint : `/${endpoint}`;
+    return `${cleanBase}${cleanPath}`;
+  }
+
   connectedCallback() {
-    // 初始化主题
+    // 初始化主题与 API 基地址
     const injectedOptions = typeof window !== 'undefined' ? (window as any).__AGENT_FEEDBACK_OPTIONS__ : undefined;
     const initialTheme: FeedbackTheme =
       (this.getAttribute?.('theme') as FeedbackTheme) ||
@@ -386,6 +468,13 @@ export class AgentFeedbackWidget extends CustomElementBase {
     if (injectedOptions?.primaryColor && (this as any).style) {
       (this as any).style.setProperty('--af-primary', injectedOptions.primaryColor);
     }
+
+    const initialApiBase =
+      this.getAttribute?.('api-base') ||
+      injectedOptions?.apiBase ||
+      getApiBase() ||
+      '';
+    this.apiBase = initialApiBase.trim().replace(/\/+$/, '');
 
     this.render();
     this.bindEvents();
@@ -416,7 +505,7 @@ export class AgentFeedbackWidget extends CustomElementBase {
   private async fetchHistoryQuickStatus() {
     if (typeof fetch === 'undefined') return;
     try {
-      const res = await fetch('/api/__agent_feedback/list');
+      const res = await fetch(this.getApiUrl('/api/__agent_feedback/list'));
       if (res.ok) {
         const data = await res.json();
         const list: InAppFeedback[] = Array.isArray(data) ? data : data.list || [];
@@ -483,7 +572,7 @@ export class AgentFeedbackWidget extends CustomElementBase {
     try {
       // 1. 获取日级索引
       try {
-        const datesRes = await fetch('/api/__agent_feedback/dates');
+        const datesRes = await fetch(this.getApiUrl('/api/__agent_feedback/dates'));
         if (datesRes.ok) {
           const datesData = await datesRes.json();
           this.datesList = Array.isArray(datesData?.dates) ? datesData.dates : [];
@@ -493,7 +582,7 @@ export class AgentFeedbackWidget extends CustomElementBase {
 
       // 2. 加载首屏数据 (最新一天工单)
       const query = this.datesList.length > 0 ? `?date=${encodeURIComponent(this.datesList[0])}` : '';
-      const res = await fetch(`/api/__agent_feedback/list${query}`);
+      const res = await fetch(this.getApiUrl(`/api/__agent_feedback/list${query}`));
       if (res.ok) {
         const data = await res.json();
         const list: InAppFeedback[] = Array.isArray(data) ? data : data.list || [];
@@ -536,7 +625,7 @@ export class AgentFeedbackWidget extends CustomElementBase {
     this.currentDateIndex++;
     const prevDate = this.datesList[this.currentDateIndex];
     try {
-      const res = await fetch(`/api/__agent_feedback/list?date=${encodeURIComponent(prevDate)}`);
+      const res = await fetch(this.getApiUrl(`/api/__agent_feedback/list?date=${encodeURIComponent(prevDate)}`));
       if (res.ok) {
         const list: InAppFeedback[] = await res.json();
         if (Array.isArray(list)) {
@@ -583,15 +672,21 @@ export class AgentFeedbackWidget extends CustomElementBase {
         ...(this.attachedScreenshot ? { screenshots: [this.attachedScreenshot] } : {})
       };
 
-      const res = await fetch('/api/__agent_feedback/submit', {
+      const res = await fetch(this.getApiUrl('/api/__agent_feedback/submit'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload)
       });
 
-      if (!res.ok) {
-        const errJson = await res.json().catch(() => ({}));
-        throw new Error(errJson.message || `HTTP ${res.status}`);
+      let resJson: any = null;
+      try {
+        resJson = await res.json();
+      } catch {
+        resJson = null;
+      }
+
+      if (!res.ok || !resJson || resJson.success !== true) {
+        throw new Error(resJson?.error || resJson?.message || `提交异常 (HTTP ${res.status})`);
       }
 
       this.feedbackContent = '';
@@ -635,101 +730,117 @@ export class AgentFeedbackWidget extends CustomElementBase {
     // 1. 胶囊按钮点击与拖拽
     const pill = this.shadow.querySelector?.('.pill-trigger') as HTMLElement;
     if (pill) {
-      const onPointerDown = (e: PointerEvent | MouseEvent | TouchEvent) => {
-        this.isDragging = true;
-        this.dragThresholdMoved = false;
+      let isPointerActive = false;
+      let hasMoved = false;
+      let startX = 0;
+      let startY = 0;
+      let initLeft = 0;
+      let initTop = 0;
+      let pillWidth = 120;
+      let pillHeight = 40;
 
-        const clientX = 'touches' in e ? e.touches[0].clientX : (e as MouseEvent).clientX;
-        const clientY = 'touches' in e ? e.touches[0].clientY : (e as MouseEvent).clientY;
+      const onPointerStart = (clientX: number, clientY: number) => {
+        isPointerActive = true;
+        hasMoved = false;
+        startX = clientX;
+        startY = clientY;
 
-        this.startPointerX = clientX;
-        this.startPointerY = clientY;
-
-        const rect = pill.getBoundingClientRect ? pill.getBoundingClientRect() : { left: 0, top: 0, width: 100, height: 40 };
-        this.initialLeft = rect.left;
-        this.initialTop = rect.top;
+        const rect = pill.getBoundingClientRect ? pill.getBoundingClientRect() : { left: 0, top: 0, width: 120, height: 40 };
+        initLeft = rect.left;
+        initTop = rect.top;
+        pillWidth = rect.width || 120;
+        pillHeight = rect.height || 40;
 
         if (pill.style) pill.style.transition = 'none';
+      };
 
-        const onPointerMove = (moveEvent: PointerEvent | MouseEvent | TouchEvent) => {
-          if (!this.isDragging) return;
-          const curX = 'touches' in moveEvent ? moveEvent.touches[0].clientX : (moveEvent as MouseEvent).clientX;
-          const curY = 'touches' in moveEvent ? moveEvent.touches[0].clientY : (moveEvent as MouseEvent).clientY;
+      const onPointerMove = (clientX: number, clientY: number) => {
+        if (!isPointerActive) return;
+        const dx = clientX - startX;
+        const dy = clientY - startY;
 
-          const deltaX = curX - this.startPointerX;
-          const deltaY = curY - this.startPointerY;
+        if (Math.hypot(dx, dy) > 10) {
+          hasMoved = true;
+        }
 
-          if (Math.abs(deltaX) > 5 || Math.abs(deltaY) > 5) {
-            this.dragThresholdMoved = true;
-          }
+        if (!hasMoved) return;
 
-          let newLeft = this.initialLeft + deltaX;
-          let newTop = this.initialTop + deltaY;
+        const winW = typeof window !== 'undefined' ? window.innerWidth : 400;
+        const winH = typeof window !== 'undefined' ? window.innerHeight : 800;
 
-          const winW = typeof window !== 'undefined' ? window.innerWidth : 400;
-          const winH = typeof window !== 'undefined' ? window.innerHeight : 800;
+        let newLeft = Math.max(10, Math.min(winW - pillWidth - 10, initLeft + dx));
+        let newTop = Math.max(10, Math.min(winH - pillHeight - 10, initTop + dy));
 
-          newLeft = Math.max(10, Math.min(winW - rect.width - 10, newLeft));
-          newTop = Math.max(10, Math.min(winH - rect.height - 10, newTop));
+        this.currentLeft = newLeft;
+        this.currentTop = newTop;
 
-          this.currentLeft = newLeft;
-          this.currentTop = newTop;
+        if (pill.style) {
+          pill.style.left = `${newLeft}px`;
+          pill.style.top = `${newTop}px`;
+          pill.style.right = 'auto';
+          pill.style.bottom = 'auto';
+        }
+      };
 
-          if (pill.style) {
-            pill.style.left = `${newLeft}px`;
-            pill.style.top = `${newTop}px`;
-            pill.style.right = 'auto';
-            pill.style.bottom = 'auto';
-          }
-        };
+      const onPointerEnd = () => {
+        if (!isPointerActive) return;
+        isPointerActive = false;
 
-        const onPointerUp = () => {
-          if (!this.isDragging) return;
-          this.isDragging = false;
-
-          if (typeof window !== 'undefined') {
-            window.removeEventListener?.('pointermove', onPointerMove as any);
-            window.removeEventListener?.('pointerup', onPointerUp as any);
-            window.removeEventListener?.('mousemove', onPointerMove as any);
-            window.removeEventListener?.('mouseup', onPointerUp as any);
-            window.removeEventListener?.('touchmove', onPointerMove as any);
-            window.removeEventListener?.('touchend', onPointerUp as any);
-          }
-
-          if (!this.dragThresholdMoved) {
-            this.toggleModal();
-            return;
-          }
-
+        if (hasMoved) {
+          // 吸附贴边
           if (pill.style) {
             pill.style.transition = 'left 0.3s cubic-bezier(0.2, 0.9, 0.4, 1.1)';
             const winW = typeof window !== 'undefined' ? window.innerWidth : 400;
-            const centerX = (this.currentLeft ?? this.initialLeft) + rect.width / 2;
+            const centerX = (this.currentLeft ?? initLeft) + pillWidth / 2;
 
             if (centerX < winW / 2) {
               this.currentLeft = 16;
               pill.style.left = '16px';
             } else {
-              const rightSnap = winW - rect.width - 16;
+              const rightSnap = winW - pillWidth - 16;
               this.currentLeft = rightSnap;
               pill.style.left = `${rightSnap}px`;
             }
           }
-        };
-
-        if (typeof window !== 'undefined') {
-          window.addEventListener?.('pointermove', onPointerMove as any);
-          window.addEventListener?.('pointerup', onPointerUp as any);
-          window.addEventListener?.('mousemove', onPointerMove as any);
-          window.addEventListener?.('mouseup', onPointerUp as any);
-          window.addEventListener?.('touchmove', onPointerMove as any);
-          window.addEventListener?.('touchend', onPointerUp as any);
+          setTimeout(() => {
+            hasMoved = false;
+          }, 250);
+        } else {
+          // 未发生有效拖拽，直接响应点击打开弹窗！
+          this.toggleModal();
         }
       };
 
-      pill.onpointerdown = onPointerDown as any;
-      pill.ontouchstart = onPointerDown as any;
-      pill.onmousedown = onPointerDown as any;
+      // 绑定 Pointer Events (现代浏览器与移动端 WebView 统一推荐标准)
+      pill.addEventListener('pointerdown', (e: PointerEvent) => {
+        if (e.button !== 0 && e.pointerType === 'mouse') return;
+        onPointerStart(e.clientX, e.clientY);
+        if (typeof pill.setPointerCapture === 'function') {
+          try { pill.setPointerCapture(e.pointerId); } catch {}
+        }
+      });
+
+      pill.addEventListener('pointermove', (e: PointerEvent) => {
+        onPointerMove(e.clientX, e.clientY);
+      });
+
+      const handlePointerUp = (e: PointerEvent) => {
+        if (typeof pill.releasePointerCapture === 'function') {
+          try { pill.releasePointerCapture(e.pointerId); } catch {}
+        }
+        onPointerEnd();
+      };
+
+      pill.addEventListener('pointerup', handlePointerUp);
+      pill.addEventListener('pointercancel', handlePointerUp);
+
+      // 双重保险：兜底 click 事件 (针对辅助功能或合成点击)
+      pill.addEventListener('click', (e) => {
+        e.stopPropagation();
+        if (!this.isOpen && !hasMoved) {
+          this.toggleModal(true);
+        }
+      });
     }
 
     // 2. 模态框内部基础按钮
@@ -885,6 +996,24 @@ export class AgentFeedbackWidget extends CustomElementBase {
           }
         </div>
         <div class="card-content">${item.content}</div>
+        ${
+          Array.isArray(item.screenshots) && item.screenshots.length > 0
+            ? `
+          <div class="ticket-screenshots">
+            ${item.screenshots
+              .map((shot: any) => {
+                const shotPath = typeof shot === 'string' ? shot : shot.path || shot.filename || '';
+                if (!shotPath) return '';
+                const shotUrl = shotPath.startsWith('data:')
+                  ? shotPath
+                  : this.getApiUrl(shotPath.startsWith('/') ? shotPath : `/${shotPath}`);
+                return `<img src="${shotUrl}" class="ticket-screenshot-thumb" alt="截图凭证" loading="lazy" />`;
+              })
+              .join('')}
+          </div>
+        `
+            : ''
+        }
         ${
           item.reply
             ? `
@@ -1475,6 +1604,23 @@ export class AgentFeedbackWidget extends CustomElementBase {
           font-size: 12px;
           color: var(--af-text-main, #cbd5e1);
           margin-top: 8px;
+        }
+
+        .ticket-screenshots {
+          display: flex;
+          gap: 8px;
+          margin-top: 8px;
+          margin-bottom: 4px;
+          flex-wrap: wrap;
+        }
+
+        .ticket-screenshot-thumb {
+          width: 52px;
+          height: 52px;
+          object-fit: cover;
+          border-radius: 6px;
+          border: 1px solid var(--af-border, rgba(255, 255, 255, 0.1));
+          background: rgba(0, 0, 0, 0.3);
         }
 
         .agent-reply-header {

@@ -194,6 +194,12 @@ export interface AgentFeedbackPluginOptions {
    * 主题主色 (Primary Color)，如 '#4edea3' 或 '#2563eb'
    */
   primaryColor?: string;
+
+  /**
+   * 显式指定外部 API 服务基地址 (如内网穿透公网域名 https://xxx.cpolar.top 或特定主机)
+   * 默认空字符串 (自动采用同源相对路径，即使用项目自身的 Vite DevServer 服务)
+   */
+  apiBase?: string;
 }
 
 /**
@@ -582,12 +588,14 @@ export function agentFeedback(options: AgentFeedbackPluginOptions = {}): AgentFe
       if (id === '\0agent-feedback-client-virtual') {
         const themeLiteral = JSON.stringify(defaultTheme);
         const colorLiteral = primaryColor ? JSON.stringify(primaryColor) : 'undefined';
+        const apiBaseLiteral = options.apiBase ? JSON.stringify(options.apiBase.trim().replace(/\/+$/, '')) : 'undefined';
         // 输出虚拟客户端代码，驱动 Shadow DOM 自定义元素注册、主题透传与挂载
         return `
 if (typeof window !== 'undefined') {
   (window as any).__AGENT_FEEDBACK_OPTIONS__ = {
     theme: ${themeLiteral},
-    primaryColor: ${colorLiteral}
+    primaryColor: ${colorLiteral},
+    apiBase: ${apiBaseLiteral}
   };
 }
 import '@agent-feedback/client';
