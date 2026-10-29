@@ -53,6 +53,9 @@ importers:
       '@lylyuanliang/agent-feedback-core':
         specifier: workspace:*
         version: link:../core
+      '@lylyuanliang/agent-feedback-sentinel':
+        specifier: workspace:*
+        version: link:../sentinel
       vite:
         specifier: ^4.0.0 || ^5.0.0 || ^6.0.0
         version: 5.4.21(@types/node@26.6.5)

@@ -630,6 +630,9 @@ export class AgentFeedbackWidget extends CustomElementBase {
         this.historyPollTimer = setInterval(() => {
           this.pollHistoryUpdates();
         }, 5000);
+        if (typeof (this.historyPollTimer as any)?.unref === 'function') {
+          (this.historyPollTimer as any).unref();
+        }
       }
     } else {
       if (this.historyPollTimer) {
@@ -644,6 +647,9 @@ export class AgentFeedbackWidget extends CustomElementBase {
         this.statusPollTimer = setInterval(() => {
           this.fetchHistoryQuickStatus();
         }, 8000);
+        if (typeof (this.statusPollTimer as any)?.unref === 'function') {
+          (this.statusPollTimer as any).unref();
+        }
       }
     } else {
       if (this.statusPollTimer) {

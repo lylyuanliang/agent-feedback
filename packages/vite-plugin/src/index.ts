@@ -5,6 +5,8 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
+import { startSentinel } from '@lylyuanliang/agent-feedback-sentinel';
+import type { WatcherAdapter } from '@lylyuanliang/agent-feedback-sentinel';
 import type {
   InAppFeedback,
   FeedbackDateIndex,
@@ -169,6 +171,57 @@ export function syncLegacyQueue(feedbackDir: string): void {
 }
 
 /**
+ * 哨兵自动生命周期托管选项
+ */
+export interface SentinelPluginOptions {
+  /**
+   * 是否自动启动并托管哨兵监听 (默认 true 当提供 sentinel 配置对象时)
+   */
+  autoStart?: boolean;
+
+  /**
+   * 唤醒适配器类型: 'webhook' | 'mcp' | 'antigravity'
+   * 默认: 'webhook'
+   */
+  adapter?: WatcherAdapter;
+
+  /**
+   * Webhook 适配器触发的外部 Shell 命令 (例如 "claude -p '...'" 或 "dsh '...'")
+   */
+  webhookCmd?: string;
+
+  /**
+   * Webhook 适配器触发的 HTTP POST 端点
+   */
+  webhookUrl?: string;
+
+  /**
+   * 防抖聚合窗口时长秒数 (默认: 10)
+   */
+  debounceSeconds?: number;
+
+  /**
+   * 防抖聚合窗口时长毫秒数 (可选，用于快速测试)
+   */
+  debounceMs?: number;
+
+  /**
+   * 静默轮询检测间隔毫秒数 (默认: 2000)
+   */
+  pollIntervalMs?: number;
+
+  /**
+   * Antigravity 目标会话 ID (可选，默认自动读取环境变量 ANTIGRAVITY_CONVERSATION_ID)
+   */
+  conversationId?: string;
+
+  /**
+   * 唤醒回调钩子 (常用于测试拦截或自定义事件通知)
+   */
+  onWakeup?: (batch: InAppFeedback[], adapter: string) => void | Promise<void>;
+}
+
+/**
  * 插件配置项
  */
 export interface AgentFeedbackPluginOptions {
@@ -200,6 +253,12 @@ export interface AgentFeedbackPluginOptions {
    * 默认空字符串 (自动采用同源相对路径，即使用项目自身的 Vite DevServer 服务)
    */
   apiBase?: string;
+
+  /**
+   * 哨兵自动生命周期托管配置 (DevServer 启动时自动运行，退出时自动终止)
+   * 支持传入 boolean (true 开启默认 webhook 模式) 或配置对象
+   */
+  sentinel?: SentinelPluginOptions | boolean;
 }
 
 /**
@@ -558,6 +617,68 @@ export function agentFeedback(options: AgentFeedbackPluginOptions = {}): AgentFe
 
           next();
         });
+      }
+
+      // 启动并托管静默哨兵生命周期
+      let sentinelAbortController: AbortController | null = null;
+      const sentinelOpt = options.sentinel;
+      const shouldAutoStartSentinel =
+        sentinelOpt === true ||
+        (typeof sentinelOpt === 'object' && sentinelOpt?.autoStart !== false);
+
+      if (shouldAutoStartSentinel) {
+        const sentinelCfg = typeof sentinelOpt === 'object' ? sentinelOpt : {};
+        const detectedAdapter = process.env.ANTIGRAVITY_CONVERSATION_ID ? 'antigravity' : 'webhook';
+        const adapter = sentinelCfg.adapter || detectedAdapter;
+        sentinelAbortController = new AbortController();
+
+        startSentinel({
+          storageDir: feedbackDir,
+          adapter,
+          conversationId: sentinelCfg.conversationId || process.env.ANTIGRAVITY_CONVERSATION_ID,
+          webhookCommand: sentinelCfg.webhookCmd,
+          webhookUrl: sentinelCfg.webhookUrl,
+          debounceSeconds: sentinelCfg.debounceSeconds ?? 10,
+          debounceMs: sentinelCfg.debounceMs,
+          pollIntervalMs: sentinelCfg.pollIntervalMs ?? 2000,
+          once: false, // 随 DevServer 持续常驻
+          exitOnWakeup: false, // 杜绝由于唤醒退出导致 DevServer 进程退出
+          signal: sentinelAbortController.signal,
+          silent: false,
+          onWakeup: sentinelCfg.onWakeup
+        }).catch((err: any) => {
+          if (server?.config?.logger?.warn) {
+            server.config.logger.warn(`[@agent-feedback/vite-plugin] 哨兵运行异常: ${err?.message}`);
+          }
+        });
+
+        if (server?.config?.logger?.info) {
+          server.config.logger.info(`[@agent-feedback/vite-plugin] 哨兵已伴随 DevServer 自动启动 (适配器: ${adapter}, 常驻守护)`);
+        }
+      }
+
+      // 绑定 DevServer 停止事件，优雅终止哨兵
+      let onSigInt: (() => void) | null = null;
+      let onSigTerm: (() => void) | null = null;
+
+      const cleanupSentinel = () => {
+        if (onSigInt) process.removeListener('SIGINT', onSigInt);
+        if (onSigTerm) process.removeListener('SIGTERM', onSigTerm);
+        if (sentinelAbortController && !sentinelAbortController.signal.aborted) {
+          sentinelAbortController.abort();
+          sentinelAbortController = null;
+        }
+      };
+
+      onSigInt = () => cleanupSentinel();
+      onSigTerm = () => cleanupSentinel();
+
+      if (server?.httpServer) {
+        server.httpServer.on('close', cleanupSentinel);
+      }
+      if (shouldAutoStartSentinel) {
+        process.once('SIGINT', onSigInt);
+        process.once('SIGTERM', onSigTerm);
       }
     },
 

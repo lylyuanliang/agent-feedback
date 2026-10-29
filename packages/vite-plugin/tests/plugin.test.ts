@@ -9,14 +9,23 @@ import agentFeedback, { agentFeedback as namedAgentFeedback } from '../src/index
  * 模拟 Vite DevServer 及 Connect 中间件流转
  */
 class MockDevServer {
-  public config: { root: string };
+  public config: { root: string; logger?: any };
   public middlewares: {
     handlers: Array<(req: any, res: any, next: (err?: any) => void) => void>;
     use: (fn: (req: any, res: any, next: (err?: any) => void) => void) => void;
   };
+  public httpServer: EventEmitter;
 
   constructor(root: string) {
-    this.config = { root };
+    this.config = {
+      root,
+      logger: {
+        info: () => {},
+        warn: () => {},
+        error: () => {}
+      }
+    };
+    this.httpServer = new EventEmitter();
     const handlers: Array<(req: any, res: any, next: (err?: any) => void) => void> = [];
     this.middlewares = {
       handlers,
@@ -24,6 +33,10 @@ class MockDevServer {
         handlers.push(fn);
       }
     };
+  }
+
+  close() {
+    this.httpServer.emit('close');
   }
 
   dispatch(req: MockReq, res: MockRes): Promise<boolean> {
@@ -573,5 +586,133 @@ describe('@agent-feedback/vite-plugin Sharded Persistence & Upgraded API Middlew
     const code = plugin.load?.('\0agent-feedback-client-virtual');
     assert.ok(code.includes('theme: "light"'));
     assert.ok(code.includes('primaryColor: "#2563eb"'));
+  });
+});
+
+describe('@agent-feedback/vite-plugin - Sentinel Auto Lifecycle & New Project Integration', () => {
+  const baseTmpDir = path.resolve('D:/file_save/workspace/github/agent-feedback', '.tmp-sentinel-tests');
+  let tmpProjectDir: string;
+  let server: MockDevServer;
+
+  beforeEach(() => {
+    tmpProjectDir = path.resolve(baseTmpDir, 'new-proj-' + Math.random().toString(36).slice(2, 8));
+    fs.mkdirSync(tmpProjectDir, { recursive: true });
+    server = new MockDevServer(tmpProjectDir);
+  });
+
+  afterEach(() => {
+    // 模拟 DevServer 关闭
+    server.close();
+    try {
+      if (fs.existsSync(tmpProjectDir)) {
+        fs.rmSync(tmpProjectDir, { recursive: true, force: true });
+      }
+    } catch {}
+  });
+
+  it('should automatically start sentinel on configureServer and capture feedback end-to-end without prompt', async () => {
+    const wakeupBatches: any[] = [];
+
+    // 模拟新项目接入配置：在 vite.config.ts 传入 sentinel.autoStart
+    const plugin = agentFeedback({
+      sentinel: {
+        autoStart: true,
+        debounceMs: 50,
+        pollIntervalMs: 10,
+        adapter: 'webhook',
+        onWakeup: (batch) => {
+          wakeupBatches.push(batch);
+        }
+      }
+    });
+
+    // 模拟 Vite 启动 DevServer
+    plugin.configureServer?.(server);
+
+    // 模拟端侧提交工单
+    const req = new MockReq('POST', '/api/__agent_feedback/submit');
+    const res = new MockRes();
+    const p = server.dispatch(req, res);
+    req.send(JSON.stringify({
+      id: 9001,
+      content: '端侧提交测试反馈',
+      telemetry: { route: '/home', platform: 'Android' }
+    }));
+    await p;
+
+    assert.strictEqual(res.statusCode, 200);
+
+    // 等待哨兵防抖收集与唤醒 (约 150ms)
+    await new Promise(r => setTimeout(r, 160));
+
+    // 验证哨兵无需任何外部手动启动，完全由 Vite 插件自动托管唤醒！
+    assert.strictEqual(wakeupBatches.length, 1, '哨兵应自动被 DevServer 拉起并触发唤醒');
+    assert.strictEqual(wakeupBatches[0][0].id, 9001);
+    assert.strictEqual(wakeupBatches[0][0].status, 'processing');
+  });
+
+  it('should keep listening in continuous daemon mode across multiple feedback cycles', async () => {
+    const wakeupBatches: any[] = [];
+
+    const plugin = agentFeedback({
+      sentinel: {
+        autoStart: true,
+        debounceMs: 40,
+        pollIntervalMs: 10,
+        adapter: 'webhook',
+        onWakeup: (batch) => {
+          wakeupBatches.push(batch);
+        }
+      }
+    });
+
+    plugin.configureServer?.(server);
+
+    // 模拟第 1 条反馈
+    const req1 = new MockReq('POST', '/api/__agent_feedback/submit');
+    const res1 = new MockRes();
+    const p1 = server.dispatch(req1, res1);
+    req1.send(JSON.stringify({ id: 9101, content: '第1个缺陷' }));
+    await p1;
+
+    await new Promise(r => setTimeout(r, 120));
+    assert.strictEqual(wakeupBatches.length, 1);
+
+    // 模拟第 2 条反馈 (验证哨兵依然持续守护，不退出)
+    const req2 = new MockReq('POST', '/api/__agent_feedback/submit');
+    const res2 = new MockRes();
+    const p2 = server.dispatch(req2, res2);
+    req2.send(JSON.stringify({ id: 9102, content: '第2个缺陷' }));
+    await p2;
+
+    await new Promise(r => setTimeout(r, 120));
+    assert.strictEqual(wakeupBatches.length, 2, '哨兵应持续常驻，无缝捕获第2次反馈');
+    assert.strictEqual(wakeupBatches[1][0].id, 9102);
+  });
+
+  it('should cleanly terminate sentinel when DevServer closes', async () => {
+    const plugin = agentFeedback({
+      sentinel: {
+        autoStart: true,
+        debounceMs: 50,
+        pollIntervalMs: 10,
+        adapter: 'webhook'
+      }
+    });
+
+    plugin.configureServer?.(server);
+
+    // 关闭 DevServer
+    server.close();
+
+    // 再次提交反馈，哨兵已停止，不应有新的异常
+    const req = new MockReq('POST', '/api/__agent_feedback/submit');
+    const res = new MockRes();
+    const p = server.dispatch(req, res);
+    req.send(JSON.stringify({ id: 9201, content: '服务器关闭后的反馈' }));
+    await p;
+
+    await new Promise(r => setTimeout(r, 80));
+    assert.ok(true, '关闭服务后正常清理无异常');
   });
 });

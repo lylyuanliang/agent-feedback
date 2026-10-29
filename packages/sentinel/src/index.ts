@@ -50,10 +50,12 @@ export interface WatcherOptions {
   onDebounceProgress?: (count: number) => void;
   /** 唤醒后是否调用 process.exit(0) (默认 true；当提供 onWakeup 时默认 false) */
   exitOnWakeup?: boolean;
-  /** 是否仅捕获处理单次批次即退出 (默认 true) */
+  /** 是否仅捕获处理单次批次即退出 (当 adapter 为 antigravity 时默认 true；当 adapter 为 webhook 或 mcp 时默认 false 持续常驻守护) */
   once?: boolean;
   /** 外部中止信号 (用于优雅终止轮询) */
   signal?: AbortSignal;
+  /** Antigravity 目标会话 ID (用于通过 agentapi send-message 主动唤醒) */
+  conversationId?: string;
   /** 是否静默控制台输出 (测试时开启可保持输出整洁) */
   silent?: boolean;
 }
@@ -661,7 +663,7 @@ export async function startSentinel(options: WatcherOptions = {}): Promise<void>
   const lastProcessedFile =
     options.lastProcessedFile || path.resolve(storageDir, 'last_processed_id.txt');
   const adapter = options.adapter || 'antigravity';
-  const isOnce = options.once !== false; // 默认单次捕获唤醒即结束
+  const isOnce = options.once !== false;
   const log = options.silent
     ? () => {}
     : (...args: any[]) => console.log(...args);
@@ -771,7 +773,24 @@ export async function startSentinel(options: WatcherOptions = {}): Promise<void>
           }
 
           if (adapter === 'antigravity') {
-            log('[*] 🔔 触发 Antigravity 响应式任务退出唤醒机制！');
+            log('[*] 🔔 触发 Antigravity 响应式唤醒机制...');
+            const convId = options.conversationId || process.env.ANTIGRAVITY_CONVERSATION_ID;
+            if (convId) {
+              const summaryLines = processedBatch
+                .slice(0, 3)
+                .map(i => `[#${i.id}] ${i.content}`)
+                .join('; ');
+              const moreText = processedBatch.length > 3 ? ` 等共 ${processedBatch.length} 条` : '';
+              const wakeMsg = `📥 [Agent Feedback 自动唤醒] 捕获到端侧真实新反馈 (共 ${processedBatch.length} 条)：${summaryLines}${moreText}。请立即进入排查与自愈修复流程。`;
+              try {
+                const safeMsg = wakeMsg.replace(/"/g, '\\"').replace(/[\r\n]+/g, ' ');
+                await execAsync(`agentapi send-message ${convId} "${safeMsg}"`);
+                log(`[*] 🚀 已通过 agentapi 向 Antigravity 会话 [${convId}] 发送主动唤醒消息！`);
+              } catch (apiErr: any) {
+                warn(`[!] agentapi 唤醒调用异常: ${apiErr?.message}`);
+              }
+            }
+
             const shouldExit =
               options.exitOnWakeup !== undefined
                 ? options.exitOnWakeup

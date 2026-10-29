@@ -333,6 +333,44 @@ describe('@agent-feedback/sentinel - Pluggable Adapters Matrix', () => {
     assert.strictEqual(hookBatchLen, 1);
   });
 
+  it('should support continuous daemon mode (once: false) across multiple consecutive batches', async () => {
+    const abort = new AbortController();
+    const batches: InAppFeedback[][] = [];
+
+    const sentinelPromise = startSentinel({
+      queueFile,
+      lastProcessedFile,
+      debounceMs: 30,
+      pollIntervalMs: 10,
+      adapter: 'webhook',
+      once: false,
+      signal: abort.signal,
+      silent: true,
+      onWakeup: (batch) => {
+        batches.push(batch);
+      }
+    });
+
+    // 第 1 批反馈
+    const item1 = createSampleFeedback({ id: 4001, content: '第1批问题' });
+    fs.writeFileSync(queueFile, JSON.stringify([item1]), 'utf-8');
+
+    // 等待第 1 批处理完成
+    await new Promise(r => setTimeout(r, 60));
+    assert.strictEqual(batches.length, 1, '应成功捕获第 1 批反馈');
+
+    // 第 2 批追加反馈 (哨兵必须依然在后台存活并继续监听)
+    const item2 = createSampleFeedback({ id: 4002, content: '第2批问题' });
+    fs.writeFileSync(queueFile, JSON.stringify([item1, item2]), 'utf-8');
+
+    // 等待第 2 批处理完成
+    await new Promise(r => setTimeout(r, 60));
+    assert.strictEqual(batches.length, 2, '持续守护模式应无缝捕获第 2 批反馈');
+
+    abort.abort();
+    await sentinelPromise;
+  });
+
   it('should provide MCP tools definition and handlers for coding agents', async () => {
     // 验证 MCP 工具清单规范
     assert.strictEqual(mcpTools.length, 2);

@@ -35,6 +35,7 @@ function printHelp() {
   --webhook-cmd <command>         Webhook 适配器触发的外部 Shell 命令
   --webhook-url <url>             Webhook 适配器触发的 HTTP POST 端点
   --once                          处理完第一批反馈即退出 (默认开启)
+  --no-once, --daemon             持续守护监听模式 (处理完一批后不退出，继续等待下一批)
   -h, --help                      显示帮助文档
   -v, --version                   显示版本号
 
@@ -53,7 +54,7 @@ function parseCliArgs(args) {
     poll: 2000,
     webhookCmd: undefined,
     webhookUrl: undefined,
-    once: true,
+    once: undefined,
     help: false,
     version: false
   };
@@ -65,7 +66,7 @@ function parseCliArgs(args) {
       options.help = true;
     } else if (arg === '--version' || arg === '-v') {
       options.version = true;
-    } else if (arg === '--no-once') {
+    } else if (arg === '--no-once' || arg === '--daemon' || arg === '-d') {
       options.once = false;
     } else if (arg === '--once') {
       options.once = true;

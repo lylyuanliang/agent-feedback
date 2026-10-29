@@ -137,6 +137,10 @@ flowchart TD
    - **双向流式透传**：端侧用户无需重启应用，只需在悬浮窗中切换至「历史与进度」Tab，即可在时间轴上看到自己刚才提交的工单已变为绿色“已解决”卡片，并能直接阅读 AI Agent 回写的修改详情；
    - **系统级主动通知**：除工单自愈外，Agent 或 CI 流水线还可通过 `npx agent-feedback notice "新包已推送到内测通道"` 主动向时间轴插入高亮系统公告，实现从“端侧上报”到“AI 修复”再到“端侧回传”的完整生命周期。
 
+> 💡 **多 Agent 生态兼容说明**：
+> 哨兵绝不仅支持 Antigravity，而是内置了**响应式退出、Headless CLI 命令调起、标准 Stdio MCP 服务与 Webhook HTTP 投递** 4 大可插拔适配器，全面兼容 **Claude Code**、**OpenAI Codex**、**DeepSeek / DSH**、**ZCode 内部自研智能体** 以及 **Cursor / Windsurf**！
+> 👉 详细实施与配置参见：[**智能体生态接入与多 Agent 闭环指南 (docs/multi-agent-integration-guide.md)**](docs/multi-agent-integration-guide.md)
+
 ---
 
 ## ✨ 核心特性
