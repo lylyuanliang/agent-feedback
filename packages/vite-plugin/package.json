@@ -1,5 +1,5 @@
 {
-  "name": "@agent-feedback/vite-plugin",
+  "name": "@lylyuanliang/agent-feedback-vite-plugin",
   "version": "1.0.0",
   "description": "Zero-code bundler plugin & DevServer middleware for Agent Feedback Bridge",
   "type": "module",
@@ -13,12 +13,21 @@
       "default": "./dist/index.js"
     }
   },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
   "scripts": {
     "build": "tsc",
+    "prepublishOnly": "pnpm run build",
     "test": "node --experimental-strip-types --test tests/plugin.test.ts"
   },
   "dependencies": {
-    "@agent-feedback/core": "workspace:*"
+    "@lylyuanliang/agent-feedback-core": "workspace:*"
   },
   "peerDependencies": {
     "vite": "^4.0.0 || ^5.0.0 || ^6.0.0"

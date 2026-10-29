@@ -7,13 +7,13 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { exec } from 'node:child_process';
 import { promisify } from 'node:util';
-import { sanitizeFeedbackContent } from '@agent-feedback/core';
+import { sanitizeFeedbackContent } from '@lylyuanliang/agent-feedback-core';
 import type {
   InAppFeedback,
   FeedbackStatus,
   SecurityTriageResult,
   FeedbackDateIndex
-} from '@agent-feedback/core';
+} from '@lylyuanliang/agent-feedback-core';
 
 export type {
   InAppFeedback,
@@ -150,7 +150,7 @@ export function insertNotice(
     telemetry: extra.telemetry || {
       route: 'cli',
       viewport: { width: 0, height: 0, dpr: 1 },
-      userAgent: '@agent-feedback/sentinel-cli',
+      userAgent: '@lylyuanliang/agent-feedback-sentinel-cli',
       platform: 'desktop'
     }
   };
@@ -609,7 +609,7 @@ export async function startMcpServer(options: WatcherOptions = {}): Promise<void
           protocolVersion: '2024-11-05',
           capabilities: { tools: {} },
           serverInfo: {
-            name: '@agent-feedback/sentinel',
+            name: '@lylyuanliang/agent-feedback-sentinel',
             version: '1.0.0'
           }
         });

@@ -161,6 +161,8 @@ const {
   detectPlatform,
   collectTelemetry,
   captureScreenshot,
+  formatLocalTime,
+  formatLocalDate,
   AgentFeedbackWidget,
   registerAgentFeedbackWidget,
   autoMountWidget,
@@ -330,6 +332,22 @@ describe('@agent-feedback/client Platform & Telemetry Extractor', () => {
     const screenshot = await captureScreenshot();
     // 在无真实 Canvas/DOM 环境下安全返回 null，不抛出任何异常
     assert.strictEqual(screenshot, null);
+  });
+
+  it('should accurately format local time and local date according to user timezone', () => {
+    const item = {
+      id: 1793190616954,
+      receivedAt: '2026-10-28T12:30:16.954Z',
+      timestamp: 1793190616954
+    };
+    const localTime = formatLocalTime(item);
+    const expectedD = new Date(item.timestamp);
+    const pad = (n: number) => (n < 10 ? `0${n}` : `${n}`);
+    const expectedTime = `${pad(expectedD.getHours())}:${pad(expectedD.getMinutes())}:${pad(expectedD.getSeconds())}`;
+    assert.strictEqual(localTime, expectedTime, 'Local time should match client wall clock');
+
+    const localDate = formatLocalDate(item);
+    assert.strictEqual(localDate.startsWith('2026-'), true);
   });
 });
 
@@ -613,5 +631,16 @@ describe('@agent-feedback/client <agent-feedback-widget> Web Component', () => {
     // 切换离开时触发清理函数
     widget.setTab('submit');
     assert.strictEqual(cleanupCalled, true, 'Extension cleanup should be invoked when tab switches');
+  });
+  it('should maintain multi-panel architecture for zero-flicker tab transitions', () => {
+    const widget = new AgentFeedbackWidget();
+    widget.connectedCallback();
+    widget.toggleModal(true);
+
+    const html = widget.shadow.innerHTML;
+    // 验证多面板并存架构，杜绝全量 DOM 销毁重演入场动画导致的闪烁
+    assert.ok(html.includes('af-tab-panel-submit'), 'Submit panel should exist in DOM');
+    assert.ok(html.includes('af-tab-panel-history'), 'History panel should exist in DOM');
+    assert.ok(html.includes('display: block'), 'Active panel should be visible');
   });
 });

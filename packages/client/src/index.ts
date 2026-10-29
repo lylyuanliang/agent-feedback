@@ -12,7 +12,7 @@ import type {
   FeedbackTheme,
   FeedbackExtensionTab,
   ExtensionContext
-} from '@agent-feedback/core';
+} from '@lylyuanliang/agent-feedback-core';
 
 export type {
   InAppFeedback,
@@ -284,61 +284,150 @@ export function collectTelemetry(): TelemetrySnapshot {
 }
 
 /**
- * 轻量端侧截图辅助函数
+ * 格式化本地时间 (HH:mm:ss，依据用户端侧本地时区)
+ */
+export function formatLocalTime(item: Partial<InAppFeedback>): string {
+  const ts = item.timestamp || (item.receivedAt ? new Date(item.receivedAt).getTime() : 0);
+  if (!ts || isNaN(ts)) return '';
+  const d = new Date(ts);
+  const pad = (n: number) => (n < 10 ? `0${n}` : `${n}`);
+  return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+}
+
+/**
+ * 格式化本地日期 (YYYY-MM-DD，依据用户端侧本地时区)
+ */
+export function formatLocalDate(item: Partial<InAppFeedback>): string {
+  if (item.date) return item.date;
+  const ts = item.timestamp || (item.receivedAt ? new Date(item.receivedAt).getTime() : 0);
+  if (!ts || isNaN(ts)) return '今日';
+  const d = new Date(ts);
+  const pad = (n: number) => (n < 10 ? `0${n}` : `${n}`);
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+}
+
+/**
+ * 客户端轻量图片压缩引擎，将手机超大相片/截图自动缩放并压缩为轻量 JPEG (约 60KB~100KB)
+ */
+export async function compressImage(file: File | Blob, maxDim = 1200, quality = 0.75): Promise<string> {
+  return new Promise((resolve, reject) => {
+    if (!file) return reject(new Error('未提供有效图片'));
+    if (typeof FileReader === 'undefined') {
+      return reject(new Error('环境不支持 FileReader'));
+    }
+
+    const reader = new FileReader();
+    reader.onerror = () => reject(new Error('读取图片文件失败'));
+    reader.onload = (e) => {
+      const dataUrl = e.target?.result as string;
+      if (typeof Image === 'undefined') {
+        return resolve(dataUrl);
+      }
+
+      const img = new Image();
+      img.onerror = () => resolve(dataUrl);
+      img.onload = () => {
+        try {
+          let width = img.naturalWidth || img.width;
+          let height = img.naturalHeight || img.height;
+
+          if (width > maxDim || height > maxDim) {
+            if (width > height) {
+              height = Math.round((height * maxDim) / width);
+              width = maxDim;
+            } else {
+              width = Math.round((width * maxDim) / height);
+              height = maxDim;
+            }
+          }
+
+          const canvas = document.createElement('canvas');
+          canvas.width = width;
+          canvas.height = height;
+          const ctx = canvas.getContext('2d');
+          if (!ctx) return resolve(dataUrl);
+
+          ctx.fillStyle = '#12151c';
+          ctx.fillRect(0, 0, width, height);
+          ctx.drawImage(img, 0, 0, width, height);
+
+          const compressed = canvas.toDataURL('image/jpeg', quality);
+          resolve(compressed);
+        } catch {
+          resolve(dataUrl);
+        }
+      };
+      img.src = dataUrl;
+    };
+    reader.readAsDataURL(file);
+  });
+}
+
+/**
+ * 高保真端侧截图辅助函数 (优先使用宿主环境的 html2canvas)
  */
 export async function captureScreenshot(): Promise<string | null> {
   if (typeof window === 'undefined' || typeof document === 'undefined') {
     return null;
   }
+
+  // 1. 获取所有挂载的 feedback widget 并临时隐藏模态框遮罩，防止把遮罩自身截进去
+  const widgets = Array.from(document.querySelectorAll('agent-feedback-widget'));
+  const backdropsToRestore: HTMLElement[] = [];
+  widgets.forEach((w: any) => {
+    const backdrop = w.shadowRoot?.querySelector('.modal-backdrop') as HTMLElement;
+    if (backdrop && backdrop.style.display !== 'none') {
+      backdrop.style.opacity = '0';
+      backdrop.style.pointerEvents = 'none';
+      backdropsToRestore.push(backdrop);
+    }
+  });
+
+  const restoreBackdrops = () => {
+    backdropsToRestore.forEach((b) => {
+      b.style.opacity = '1';
+      b.style.pointerEvents = '';
+    });
+  };
+
   try {
-    const width = window.innerWidth || 390;
-    const height = window.innerHeight || 844;
-    const canvas = document.createElement('canvas');
-    canvas.width = width;
-    canvas.height = height;
-    const ctx = canvas.getContext('2d');
-    if (!ctx) return null;
+    // 稍等 100ms 保证 DOM 视图重绘且遮罩完全隐去
+    await new Promise((resolve) => setTimeout(resolve, 100));
 
-    ctx.fillStyle = '#12151c';
-    ctx.fillRect(0, 0, width, height);
-
-    const docClone = document.documentElement.cloneNode(true) as HTMLElement;
-    const widgetInClone = docClone.querySelector('agent-feedback-widget');
-    if (widgetInClone) {
-      widgetInClone.remove();
+    // 2. 尝试从全局或动态 import 获取 html2canvas
+    let html2canvasFn: any = (window as any).html2canvas;
+    if (!html2canvasFn) {
+      try {
+        const dynImport = new Function('specifier', 'return import(specifier)');
+        const mod: any = await dynImport('html2canvas');
+        html2canvasFn = mod?.default || mod;
+      } catch {
+        // 宿主环境未安装 html2canvas
+      }
     }
 
-    const svgData = `
-      <svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}">
-        <foreignObject width="100%" height="100%">
-          <div xmlns="http://www.w3.org/1999/xhtml" style="width:${width}px;height:${height}px;overflow:hidden;background:#12151c;color:#fff;">
-            ${docClone.innerHTML.slice(0, 50000)}
-          </div>
-        </foreignObject>
-      </svg>
-    `;
-    const blob = new Blob([svgData], { type: 'image/svg+xml;charset=utf-8' });
-    const url = URL.createObjectURL(blob);
-    const img = new Image();
+    if (typeof html2canvasFn === 'function') {
+      const canvas = await html2canvasFn(document.body, {
+        useCORS: true,
+        allowTaint: true,
+        logging: false,
+        scale: Math.min(window.devicePixelRatio || 1, 2),
+        ignoreElements: (el: Element) => el.tagName === 'AGENT-FEEDBACK-WIDGET'
+      });
 
-    return await new Promise<string>((resolve) => {
-      img.onload = () => {
-        try {
-          ctx.drawImage(img, 0, 0);
-          URL.revokeObjectURL(url);
-          resolve(canvas.toDataURL('image/png'));
-        } catch {
-          URL.revokeObjectURL(url);
-          resolve(canvas.toDataURL('image/png'));
-        }
-      };
-      img.onerror = () => {
-        URL.revokeObjectURL(url);
-        resolve(canvas.toDataURL('image/png'));
-      };
-      img.src = url;
-    });
-  } catch {
+      restoreBackdrops();
+
+      // 导出并使用 Canvas 引擎压缩为 ~80KB 轻量高保真 JPEG
+      const dataUrl = canvas.toDataURL('image/jpeg', 0.82);
+      return await compressImage(dataUrl, 1200, 0.75);
+    }
+
+    restoreBackdrops();
+    // 若环境未提供 html2canvas，绝不生成破坏性的全黑 SVG 假图，返回 null 触发优雅降级
+    return null;
+  } catch (err) {
+    restoreBackdrops();
+    console.warn('[agent-feedback] captureScreenshot failed:', err);
     return null;
   }
 }
@@ -413,8 +502,16 @@ export class AgentFeedbackWidget extends CustomElementBase {
   private historyList: InAppFeedback[] = [];
   private isLoadingHistory = false;
 
+  // 大图预览 Lightbox 状态
+  private lightboxSrc: string | null = null;
+  private lightboxTitle: string = '';
+
   // 扩展槽生命周期清理钩子
   private extensionCleanups: Map<string, () => void> = new Map();
+
+  // 实时轮询定时器
+  private historyPollTimer: any = null;
+  private statusPollTimer: any = null;
 
   constructor() {
     super();
@@ -453,6 +550,21 @@ export class AgentFeedbackWidget extends CustomElementBase {
     return `${cleanBase}${cleanPath}`;
   }
 
+  /**
+   * 规范化截图完整访问 URL (兼容日级分片、旧版路径及 cpolar 穿透基地址)
+   */
+  public getScreenshotUrl(shot: any): string {
+    const shotPath = typeof shot === 'string' ? shot : shot?.path || shot?.filename || '';
+    if (!shotPath) return '';
+    if (shotPath.startsWith('data:') || shotPath.startsWith('http://') || shotPath.startsWith('https://')) {
+      return shotPath;
+    }
+    const clean = shotPath
+      .replace(/^[\/\\]*(api[\/\\](__agent_feedback|feedback)[\/\\])?(screenshots?[\/\\])?/i, '')
+      .replace(/^[\\\/]+/, '');
+    return this.getApiUrl(`/api/__agent_feedback/screenshots/${clean}`);
+  }
+
   connectedCallback() {
     // 初始化主题与 API 基地址
     const injectedOptions = typeof window !== 'undefined' ? (window as any).__AGENT_FEEDBACK_OPTIONS__ : undefined;
@@ -484,6 +596,14 @@ export class AgentFeedbackWidget extends CustomElementBase {
 
   disconnectedCallback() {
     this.cleanupExtensionTabs();
+    if (this.historyPollTimer) {
+      clearInterval(this.historyPollTimer);
+      this.historyPollTimer = null;
+    }
+    if (this.statusPollTimer) {
+      clearInterval(this.statusPollTimer);
+      this.statusPollTimer = null;
+    }
   }
 
   public refreshWidget() {
@@ -501,6 +621,88 @@ export class AgentFeedbackWidget extends CustomElementBase {
   }
 
   /**
+   * 状态与历史实时轮询管理
+   */
+  private checkAndSyncPolling() {
+    // 1. 历史时间轴轮询：仅在弹窗打开且停留在「历史与进度」Tab 时启动
+    if (this.isOpen && this.activeTab === 'history') {
+      if (!this.historyPollTimer) {
+        this.historyPollTimer = setInterval(() => {
+          this.pollHistoryUpdates();
+        }, 5000);
+      }
+    } else {
+      if (this.historyPollTimer) {
+        clearInterval(this.historyPollTimer);
+        this.historyPollTimer = null;
+      }
+    }
+
+    // 2. 悬浮胶囊呼吸灯轮询：仅在存在处理中工单且弹窗关闭时低频检查
+    if (!this.isOpen && this.hasProcessingItems) {
+      if (!this.statusPollTimer) {
+        this.statusPollTimer = setInterval(() => {
+          this.fetchHistoryQuickStatus();
+        }, 8000);
+      }
+    } else {
+      if (this.statusPollTimer) {
+        clearInterval(this.statusPollTimer);
+        this.statusPollTimer = null;
+      }
+    }
+  }
+
+  /**
+   * 静默轮询工单状态更新并无感刷新
+   */
+  private async pollHistoryUpdates() {
+    if (typeof fetch === 'undefined' || typeof document !== 'undefined' && document.hidden) return;
+    if (!this.isOpen || this.activeTab !== 'history') return;
+
+    try {
+      const query = this.datesList.length > 0 ? `?date=${encodeURIComponent(this.datesList[0])}` : '';
+      const res = await fetch(this.getApiUrl(`/api/__agent_feedback/list${query}`));
+      if (!res.ok) return;
+
+      const latestList: InAppFeedback[] = await res.json();
+      if (!Array.isArray(latestList)) return;
+
+      const targetDate = this.datesList.length > 0 ? this.datesList[0] : (latestList[0]?.date || '今日');
+      const currentList = this.loadedDates.get(targetDate) || [];
+
+      // 检查工单状态、回复说明或数量是否有任何变化
+      const hasChanged =
+        latestList.length !== currentList.length ||
+        latestList.some((item, idx) => {
+          const old = currentList[idx];
+          return !old || old.id !== item.id || old.status !== item.status || old.reply !== item.reply;
+        });
+
+      if (hasChanged) {
+        this.loadedDates.set(targetDate, latestList);
+        this.historyList = latestList;
+        this.hasProcessingItems = latestList.some(i => i.status === 'processing' || i.status === 'pending');
+        this.updatePillIndicator();
+
+        // 平滑刷新：记录当前滚动位置，重新渲染后瞬间恢复，绝对不跳顶
+        const bodyEl = this.shadow.querySelector('.modal-body') as HTMLElement;
+        const prevScrollTop = bodyEl ? bodyEl.scrollTop : 0;
+
+        this.render();
+        this.bindEvents();
+
+        const newBodyEl = this.shadow.querySelector('.modal-body') as HTMLElement;
+        if (newBodyEl) {
+          newBodyEl.scrollTop = prevScrollTop;
+        }
+      }
+    } catch {
+      // 网络波动容错
+    }
+  }
+
+  /**
    * 快速检查是否有处理中状态，控制呼吸灯
    */
   private async fetchHistoryQuickStatus() {
@@ -513,6 +715,7 @@ export class AgentFeedbackWidget extends CustomElementBase {
         this.historyList = list;
         this.hasProcessingItems = list.some(i => i.status === 'processing' || i.status === 'pending');
         this.updatePillIndicator();
+        this.checkAndSyncPolling();
       }
     } catch {
       // 离线或后端未就绪
@@ -523,14 +726,14 @@ export class AgentFeedbackWidget extends CustomElementBase {
    * 刷新呼吸灯显示
    */
   private updatePillIndicator() {
-    const dot = this.shadow?.querySelector?.('.pill-dot');
-    if (dot) {
+    const dots = this.shadow?.querySelectorAll?.('.pill-dot');
+    dots?.forEach((dot: any) => {
       if (this.hasProcessingItems) {
         dot.classList?.add('pulsing');
       } else {
         dot.classList?.remove('pulsing');
       }
-    }
+    });
   }
 
   /**
@@ -544,6 +747,7 @@ export class AgentFeedbackWidget extends CustomElementBase {
     this.submitFeedbackMessage = null;
     this.render();
     this.bindEvents();
+    this.checkAndSyncPolling();
 
     if (this.isOpen && this.activeTab === 'history') {
       this.loadHistory();
@@ -551,44 +755,176 @@ export class AgentFeedbackWidget extends CustomElementBase {
   }
 
   /**
-   * 切换 Tab
+   * 切换 Tab (原生局部切换，0 毫秒完成，零 DOM 销毁重构，零入场动画重演，杜绝界面闪烁)
    */
   public setTab(tab: string) {
-    this.cleanupExtensionTabs();
+    if (this.activeTab === tab) return;
+    const prevTab = this.activeTab;
     this.activeTab = tab;
     this.submitFeedbackMessage = null;
-    this.render();
-    this.bindEvents();
+
+    // 尝试就地轻量切换面板可见性与类名 (绝不销毁 DOM，零闪烁)
+    const switched = this.switchTabDom(tab, prevTab);
+    if (!switched) {
+      // 容错降级：如果 Shadow DOM 未就绪，走全量 render
+      this.cleanupExtensionTabs();
+      this.render();
+      this.bindEvents();
+    }
+    this.checkAndSyncPolling();
+
     if (tab === 'history') {
-      this.loadHistory();
+      // 关键优化：若已有加载过的数据，后台静默拉取更新，保持已有列表始终可见，不闪现大块空白！
+      this.loadHistory(this.loadedDates.size > 0);
     }
   }
 
   /**
-   * 加载历史时间轴数据
+   * 判断当前是否处于真实浏览器 Shadow DOM 环境 (区分 Node 单元测试环境)
    */
-  public async loadHistory() {
+  private isNativeDom(): boolean {
+    return typeof ShadowRoot !== 'undefined' && this.shadow instanceof ShadowRoot;
+  }
+
+  /**
+   * 原生局部 Tab 切换 (0 毫秒完成，零 DOM 重建，零入场动画重演，杜绝界面闪烁)
+   */
+  private switchTabDom(newTab: string, prevTab: string): boolean {
+    if (!this.shadow) return false;
+    // 若在 Node 简易 Mock 环境下，降级走全量 render 更新 mock.innerHTML
+    if (!this.isNativeDom()) return false;
+
+    // 1. 获取所有 Tab 按钮，更新 active 样式
+    const allTabBtns = this.shadow.querySelectorAll?.('.tab-btn');
+    if (!allTabBtns || allTabBtns.length === 0) return false;
+
+    allTabBtns.forEach((btn: any) => {
+      btn.classList?.remove?.('active');
+      if (btn.classList?.contains?.(`tab-btn-${newTab}`)) {
+        btn.classList?.add?.('active');
+      }
+    });
+
+    // 2. 清理前一个扩展 Tab (严格遵循测试契约执行 cleanup)
+    if (prevTab !== 'submit' && prevTab !== 'history') {
+      const cleanup = this.extensionCleanups.get(prevTab);
+      if (typeof cleanup === 'function') {
+        try {
+          cleanup();
+        } catch (err) {
+          console.error(`[agent-feedback] Error cleaning up extension tab ${prevTab}:`, err);
+        }
+        this.extensionCleanups.delete(prevTab);
+      }
+    }
+
+    // 3. 切换面板可见性
+    const panelSubmit = this.shadow.querySelector?.('.af-tab-panel-submit') as HTMLElement;
+    const panelHistory = this.shadow.querySelector?.('.af-tab-panel-history') as HTMLElement;
+    const allExtPanels = this.shadow.querySelectorAll?.('.af-tab-panel-ext');
+
+    if (panelSubmit) {
+      panelSubmit.style.display = newTab === 'submit' ? 'block' : 'none';
+    }
+    if (panelHistory) {
+      panelHistory.style.display = newTab === 'history' ? 'block' : 'none';
+    }
+    if (allExtPanels) {
+      allExtPanels.forEach((p: any) => {
+        const id = p.getAttribute?.('data-tab-id');
+        p.style.display = id === newTab ? 'block' : 'none';
+      });
+    }
+
+    // 4. 若新 Tab 是扩展 Tab，挂载或重新渲染该扩展容器
+    if (newTab !== 'submit' && newTab !== 'history') {
+      const extensions: FeedbackExtensionTab[] =
+        typeof window !== 'undefined' ? (window as any).__AGENT_FEEDBACK_EXTENSIONS__ || [] : [];
+      const currentExt = extensions.find(e => e.id === newTab);
+      const container = this.shadow.querySelector?.(`.ext-tab-container[data-tab-id="${newTab}"]`) as HTMLElement;
+      if (currentExt && container) {
+        try {
+          const context: ExtensionContext = {
+            closeModal: () => this.toggleModal(false),
+            openTab: (id: string) => this.setTab(id),
+            theme: this.getAttribute?.('theme') || 'dark'
+          };
+          const cleanup = currentExt.render(container, context);
+          if (typeof cleanup === 'function') {
+            this.extensionCleanups.set(currentExt.id, cleanup);
+          }
+        } catch (err) {
+          console.error(`[agent-feedback] Error rendering extension tab ${currentExt.id}:`, err);
+        }
+      }
+    }
+
+    return true;
+  }
+
+  /**
+   * 局部更新历史面板 DOM (不重建整个 Shadow DOM，平滑流畅)
+   */
+  private updateHistoryDom() {
+    if (!this.shadow) return;
+    // 若在 Node 简易 Mock 环境下，降级走全量 render 更新 mock.innerHTML
+    if (!this.isNativeDom()) {
+      this.render();
+      this.bindEvents();
+      return;
+    }
+    const historyPanel = this.shadow.querySelector?.('.af-tab-panel-history');
+    if (!historyPanel) {
+      this.render();
+      this.bindEvents();
+      return;
+    }
+
+    // 局部更新总数文本
+    const countEl = historyPanel.querySelector?.('.history-controls span');
+    if (countEl) {
+      countEl.textContent = `共 ${this.totalTicketsCount || this.historyList.length} 条记录`;
+    }
+
+    // 局部更新 Tab 按钮上的徽标数量
+    const historyTabBtn = this.shadow.querySelector?.('.tab-btn-history');
+    if (historyTabBtn) {
+      historyTabBtn.textContent = `历史与进度 ${this.totalTicketsCount > 0 ? `(${this.totalTicketsCount})` : ''}`;
+    }
+
+    // 局部更新时间轴内容
+    const wrapper = historyPanel.querySelector?.('.timeline-view-wrapper');
+    if (wrapper) {
+      wrapper.innerHTML = this.renderTimelineView();
+      this.bindHistoryEvents(wrapper as HTMLElement);
+    }
+  }
+
+  /**
+   * 加载历史时间轴数据 (首屏极速并发，1 次往返搞定)
+   */
+  public async loadHistory(silent: boolean = false) {
     if (typeof fetch === 'undefined') return;
-    this.isLoadingHistory = true;
-    this.render();
-    this.bindEvents();
+    if (!silent || this.loadedDates.size === 0) {
+      this.isLoadingHistory = true;
+      this.updateHistoryDom();
+    }
 
     try {
-      // 1. 获取日级索引
-      try {
-        const datesRes = await fetch(this.getApiUrl('/api/__agent_feedback/dates'));
-        if (datesRes.ok) {
-          const datesData = await datesRes.json();
-          this.datesList = Array.isArray(datesData?.dates) ? datesData.dates : [];
-          this.totalTicketsCount = typeof datesData?.totalCount === 'number' ? datesData.totalCount : 0;
-        }
-      } catch {}
+      // 并发请求日级索引与首屏最新分片，大幅减少穿透网络往返延迟
+      const [datesRes, listRes] = await Promise.all([
+        fetch(this.getApiUrl('/api/__agent_feedback/dates')).catch(() => null),
+        fetch(this.getApiUrl('/api/__agent_feedback/list')).catch(() => null)
+      ]);
 
-      // 2. 加载首屏数据 (最新一天工单)
-      const query = this.datesList.length > 0 ? `?date=${encodeURIComponent(this.datesList[0])}` : '';
-      const res = await fetch(this.getApiUrl(`/api/__agent_feedback/list${query}`));
-      if (res.ok) {
-        const data = await res.json();
+      if (datesRes && datesRes.ok) {
+        const datesData = await datesRes.json();
+        this.datesList = Array.isArray(datesData?.dates) ? datesData.dates : [];
+        this.totalTicketsCount = typeof datesData?.totalCount === 'number' ? datesData.totalCount : 0;
+      }
+
+      if (listRes && listRes.ok) {
+        const data = await listRes.json();
         const list: InAppFeedback[] = Array.isArray(data) ? data : data.list || [];
         this.loadedDates.clear();
         this.currentDateIndex = 0;
@@ -596,9 +932,8 @@ export class AgentFeedbackWidget extends CustomElementBase {
         if (this.datesList.length > 0) {
           this.loadedDates.set(this.datesList[0], list);
         } else if (list.length > 0) {
-          // 兜底：直接按条目内部 date 分组
           for (const item of list) {
-            const d = item.date || (item.receivedAt ? item.receivedAt.slice(0, 10) : '今日');
+            const d = item.date || formatLocalDate(item);
             if (!this.loadedDates.has(d)) this.loadedDates.set(d, []);
             this.loadedDates.get(d)!.push(item);
           }
@@ -614,13 +949,13 @@ export class AgentFeedbackWidget extends CustomElementBase {
       console.warn('[agent-feedback] Failed to load history:', err);
     } finally {
       this.isLoadingHistory = false;
-      this.render();
-      this.bindEvents();
+      this.updateHistoryDom();
+      this.checkAndSyncPolling();
     }
   }
 
   /**
-   * 加载前一天历史记录
+   * 加载前一天历史记录 (保持滚动条位置，彻底解决跳顶问题)
    */
   public async loadPreviousDay() {
     if (typeof fetch === 'undefined') return;
@@ -628,6 +963,11 @@ export class AgentFeedbackWidget extends CustomElementBase {
 
     this.currentDateIndex++;
     const prevDate = this.datesList[this.currentDateIndex];
+
+    // 记录当前滚动容器的滚动条高度
+    const bodyEl = this.shadow.querySelector('.modal-body') as HTMLElement;
+    const prevScrollTop = bodyEl ? bodyEl.scrollTop : 0;
+
     try {
       const res = await fetch(this.getApiUrl(`/api/__agent_feedback/list?date=${encodeURIComponent(prevDate)}`));
       if (res.ok) {
@@ -639,8 +979,13 @@ export class AgentFeedbackWidget extends CustomElementBase {
     } catch (err: any) {
       console.warn('[agent-feedback] Failed to load previous day:', err);
     } finally {
-      this.render();
-      this.bindEvents();
+      this.updateHistoryDom();
+
+      // 平滑恢复滚动位置，绝不跳顶！
+      const newBodyEl = this.shadow.querySelector('.modal-body') as HTMLElement;
+      if (newBodyEl) {
+        newBodyEl.scrollTop = prevScrollTop;
+      }
     }
   }
 
@@ -736,6 +1081,8 @@ export class AgentFeedbackWidget extends CustomElementBase {
     if (pill) {
       let isPointerActive = false;
       let hasMoved = false;
+      let touchStartTime = 0;
+      let totalMoveDist = 0;
       let startX = 0;
       let startY = 0;
       let initLeft = 0;
@@ -746,6 +1093,8 @@ export class AgentFeedbackWidget extends CustomElementBase {
       const onPointerStart = (clientX: number, clientY: number) => {
         isPointerActive = true;
         hasMoved = false;
+        touchStartTime = Date.now();
+        totalMoveDist = 0;
         startX = clientX;
         startY = clientY;
 
@@ -762,8 +1111,10 @@ export class AgentFeedbackWidget extends CustomElementBase {
         if (!isPointerActive) return;
         const dx = clientX - startX;
         const dy = clientY - startY;
+        totalMoveDist = Math.hypot(dx, dy);
 
-        if (Math.hypot(dx, dy) > 10) {
+        // 仅当位移超过 18px 且触摸时长超过 100ms 时才正式判定为拖拽意图，防止真机边缘轻触抖动误判
+        if (totalMoveDist > 18 && Date.now() - touchStartTime > 100) {
           hasMoved = true;
         }
 
@@ -789,9 +1140,10 @@ export class AgentFeedbackWidget extends CustomElementBase {
       const onPointerEnd = (e?: PointerEvent) => {
         if (!isPointerActive) return;
         isPointerActive = false;
+        const elapsed = Date.now() - touchStartTime;
 
-        if (hasMoved) {
-          // 吸附贴边
+        // 如果位移达到拖拽阈值且确实拖拽了一定时间，执行磁吸贴边
+        if (hasMoved && elapsed > 180 && totalMoveDist > 20) {
           if (pill.style) {
             pill.style.transition = 'left 0.3s cubic-bezier(0.2, 0.9, 0.4, 1.1)';
             const winW = typeof window !== 'undefined' ? window.innerWidth : 400;
@@ -810,7 +1162,8 @@ export class AgentFeedbackWidget extends CustomElementBase {
             hasMoved = false;
           }, 250);
         } else {
-          // 未发生有效拖拽，直接响应点击打开弹窗！
+          // 移动距离小或极短时间轻触（包括在屏幕顶部或底部边缘点击），一律判定为点击！
+          hasMoved = false;
           if (e && typeof e.preventDefault === 'function') {
             try { e.preventDefault(); } catch {}
           }
@@ -848,7 +1201,7 @@ export class AgentFeedbackWidget extends CustomElementBase {
       pill.addEventListener('click', (e) => {
         e.stopPropagation();
         e.preventDefault();
-        if (!this.isOpen && !hasMoved) {
+        if (!this.isOpen && (!hasMoved || totalMoveDist < 20)) {
           this.toggleModal(true);
         }
       });
@@ -956,25 +1309,31 @@ export class AgentFeedbackWidget extends CustomElementBase {
       submitBtn.addEventListener?.('click', () => this.submitFeedback());
     }
 
-    const refreshHistoryBtn = this.shadow.querySelector?.('.btn-refresh-history');
-    if (refreshHistoryBtn) {
-      refreshHistoryBtn.addEventListener?.('click', () => this.loadHistory());
-    }
-
-    const loadPrevDayBtn = this.shadow.querySelector?.('.btn-load-previous-day');
-    if (loadPrevDayBtn) {
-      loadPrevDayBtn.addEventListener?.('click', () => this.loadPreviousDay());
-    }
+    // 绑定历史控制与交互事件
+    this.bindHistoryEvents();
 
     const captureBtn = this.shadow.querySelector?.('.btn-capture-screen');
     if (captureBtn) {
       captureBtn.addEventListener?.('click', async () => {
         if (this.attachedScreenshots.length >= 6) return;
-        const shot = await captureScreenshot();
-        if (shot) {
-          this.attachedScreenshots.push(shot);
-          this.render();
-          this.bindEvents();
+        const originalText = captureBtn.innerHTML;
+        captureBtn.setAttribute('disabled', 'true');
+        captureBtn.innerHTML = '📸 正在全景截屏...';
+
+        try {
+          const shot = await captureScreenshot();
+          if (shot) {
+            this.attachedScreenshots.push(shot);
+            this.render();
+            this.bindEvents();
+          } else {
+            captureBtn.removeAttribute('disabled');
+            captureBtn.innerHTML = originalText;
+            alert('当前运行环境自动截屏受限（或存在跨域安全保护），建议使用手机自带快捷键截屏后，点击「上传本地截图」添加图片。');
+          }
+        } catch {
+          captureBtn.removeAttribute('disabled');
+          captureBtn.innerHTML = originalText;
         }
       });
     }
@@ -1004,17 +1363,13 @@ export class AgentFeedbackWidget extends CustomElementBase {
 
         for (const file of filesToRead) {
           try {
-            const dataUrl = await new Promise<string>((resolve, reject) => {
-              const reader = new FileReader();
-              reader.onload = (e) => resolve(e.target?.result as string);
-              reader.onerror = reject;
-              reader.readAsDataURL(file);
-            });
-            if (dataUrl) {
-              this.attachedScreenshots.push(dataUrl);
+            // 使用客户端轻量 Canvas 压缩引擎，将 10MB 手机原图秒级压缩为 ~80KB JPEG
+            const compressed = await compressImage(file, 1200, 0.75);
+            if (compressed) {
+              this.attachedScreenshots.push(compressed);
             }
           } catch (err) {
-            console.error('[agent-feedback] Failed to read screenshot file:', err);
+            console.error('[agent-feedback] Failed to compress screenshot file:', err);
           }
         }
 
@@ -1022,6 +1377,65 @@ export class AgentFeedbackWidget extends CustomElementBase {
         this.bindEvents();
       });
     }
+
+    // 7. 截图点击放大预览 (Lightbox - 支持历史工单截图与新建反馈上传的本地/抓取截图)
+    const allThumbs = this.shadow.querySelectorAll?.('.ticket-screenshot-thumb, .screenshot-img');
+    allThumbs?.forEach((thumb: any) => {
+      thumb.addEventListener?.('click', (e: Event) => {
+        e.stopPropagation();
+        const src = thumb.getAttribute?.('data-full') || thumb.getAttribute?.('src');
+        const title = thumb.getAttribute?.('data-title') || thumb.getAttribute?.('alt') || '截图放大预览';
+        if (src) {
+          this.lightboxSrc = src;
+          this.lightboxTitle = title;
+          this.render();
+          this.bindEvents();
+        }
+      });
+    });
+
+    // 8. 关闭大图预览 (Lightbox)
+    const lightbox = this.shadow.querySelector?.('.af-lightbox');
+    if (lightbox) {
+      lightbox.addEventListener?.('click', () => {
+        this.lightboxSrc = null;
+        this.render();
+        this.bindEvents();
+      });
+    }
+  }
+
+  /**
+   * 绑定历史面板专用交互事件 (刷新、加载前一天、缩略图大图预览)
+   */
+  private bindHistoryEvents(container?: HTMLElement) {
+    const root = container || this.shadow;
+    if (!root) return;
+
+    const refreshHistoryBtn = root.querySelector?.('.btn-refresh-history');
+    if (refreshHistoryBtn) {
+      refreshHistoryBtn.addEventListener?.('click', () => this.loadHistory());
+    }
+
+    const loadPrevDayBtn = root.querySelector?.('.btn-load-previous-day');
+    if (loadPrevDayBtn) {
+      loadPrevDayBtn.addEventListener?.('click', () => this.loadPreviousDay());
+    }
+
+    const historyThumbs = root.querySelectorAll?.('.ticket-screenshot-thumb');
+    historyThumbs?.forEach((thumb: any) => {
+      thumb.addEventListener?.('click', (e: Event) => {
+        e.stopPropagation();
+        const src = thumb.getAttribute?.('data-full') || thumb.getAttribute?.('src');
+        const title = thumb.getAttribute?.('data-title') || thumb.getAttribute?.('alt') || '截图放大预览';
+        if (src) {
+          this.lightboxSrc = src;
+          this.lightboxTitle = title;
+          this.render();
+          this.bindEvents();
+        }
+      });
+    });
   }
 
   /**
@@ -1049,7 +1463,7 @@ export class AgentFeedbackWidget extends CustomElementBase {
   private renderTicketCard(item: InAppFeedback): string {
     const isNotice = item.type === 'agent_notice';
     const cardClass = isNotice ? 'history-card card-agent-notice' : 'history-card';
-    const timeStr = item.receivedAt ? item.receivedAt.slice(11, 19) : '';
+    const timeStr = formatLocalTime(item);
 
     return `
       <div class="${cardClass}">
@@ -1067,13 +1481,11 @@ export class AgentFeedbackWidget extends CustomElementBase {
             ? `
           <div class="ticket-screenshots">
             ${item.screenshots
-              .map((shot: any) => {
-                const shotPath = typeof shot === 'string' ? shot : shot.path || shot.filename || '';
-                if (!shotPath) return '';
-                const shotUrl = shotPath.startsWith('data:')
-                  ? shotPath
-                  : this.getApiUrl(shotPath.startsWith('/') ? shotPath : `/${shotPath}`);
-                return `<img src="${shotUrl}" class="ticket-screenshot-thumb" alt="截图凭证" loading="lazy" />`;
+              .map((shot: any, sIdx: number) => {
+                const shotUrl = this.getScreenshotUrl(shot);
+                if (!shotUrl) return '';
+                const safeTitle = (item.content || '截图').replace(/"/g, '&quot;');
+                return `<img src="${shotUrl}" data-full="${shotUrl}" data-title="${safeTitle}" class="ticket-screenshot-thumb" alt="截图凭证 ${sIdx + 1}" loading="lazy" title="点击查看大图" />`;
               })
               .join('')}
           </div>
@@ -1272,7 +1684,7 @@ export class AgentFeedbackWidget extends CustomElementBase {
           100% { transform: scale(0.9); opacity: 0.8; }
         }
 
-        /* 模态框遮罩与弹窗 */
+        /* 模态框遮罩与弹窗 (采用顶部对齐与固定基准高度，确保在各 Tab 间切换时顶部标题栏与 Tab 栏永不上下跳动) */
         .modal-backdrop {
           position: fixed;
           inset: 0;
@@ -1280,9 +1692,9 @@ export class AgentFeedbackWidget extends CustomElementBase {
           background: rgba(0, 0, 0, 0.75);
           backdrop-filter: blur(8px);
           display: ${this.isOpen ? 'flex' : 'none'};
-          align-items: center;
+          align-items: flex-start;
           justify-content: center;
-          padding: 16px;
+          padding: max(env(safe-area-inset-top, 0px) + 20px, 32px) 16px 16px;
         }
 
         .modal-container {
@@ -1292,7 +1704,8 @@ export class AgentFeedbackWidget extends CustomElementBase {
           box-shadow: 0 24px 48px rgba(0, 0, 0, 0.8);
           width: 100%;
           max-width: 480px;
-          max-height: 85vh;
+          height: min(82vh, 700px);
+          max-height: calc(100vh - 48px);
           display: flex;
           flex-direction: column;
           overflow: hidden;
@@ -1304,8 +1717,9 @@ export class AgentFeedbackWidget extends CustomElementBase {
           to { opacity: 1; transform: scale(1) translateY(0); }
         }
 
-        /* 头部与 Tab 切换 */
+        /* 头部与 Tab 切换 (flex-shrink: 0 保证历史长列表滚动或加载时永不被压缩或截断) */
         .modal-header {
+          flex-shrink: 0;
           display: flex;
           align-items: center;
           justify-content: space-between;
@@ -1340,12 +1754,14 @@ export class AgentFeedbackWidget extends CustomElementBase {
         }
 
         .tabs {
+          flex-shrink: 0;
           display: flex;
           background: var(--af-bg-surface, #12151c);
           border-bottom: 1px solid var(--af-border, #222734);
           padding: 0 16px;
           gap: 12px;
           overflow-x: auto;
+          -webkit-overflow-scrolling: touch;
         }
 
         .tab-btn {
@@ -1394,6 +1810,18 @@ export class AgentFeedbackWidget extends CustomElementBase {
           overflow-y: auto;
           flex: 1;
           color: var(--af-text-main, #f3f4f6);
+        }
+
+        /* 多面板容器：保持在 DOM 中平滑切换，杜绝全屏重绘闪烁 */
+        .af-tab-panel {
+          width: 100%;
+          min-height: 100%;
+        }
+
+        .af-tab-panel-submit,
+        .af-tab-panel-history,
+        .af-tab-panel-ext {
+          width: 100%;
         }
 
         /* 遥测徽标区 */
@@ -1510,6 +1938,17 @@ export class AgentFeedbackWidget extends CustomElementBase {
           width: 100%;
           height: 100%;
           object-fit: cover;
+          cursor: pointer;
+          transition: transform 0.15s ease, filter 0.15s ease;
+        }
+
+        .screenshot-img:hover {
+          transform: scale(1.06);
+          filter: brightness(1.1);
+        }
+
+        .screenshot-img:active {
+          transform: scale(0.96);
         }
 
         .btn-remove-shot {
@@ -1702,12 +2141,84 @@ export class AgentFeedbackWidget extends CustomElementBase {
         }
 
         .ticket-screenshot-thumb {
-          width: 52px;
-          height: 52px;
+          width: 54px;
+          height: 54px;
           object-fit: cover;
           border-radius: 6px;
-          border: 1px solid var(--af-border, rgba(255, 255, 255, 0.1));
-          background: rgba(0, 0, 0, 0.3);
+          border: 1px solid var(--af-border, rgba(255, 255, 255, 0.15));
+          background: rgba(0, 0, 0, 0.4);
+          cursor: pointer;
+          transition: transform 0.15s ease, border-color 0.15s ease;
+        }
+
+        .ticket-screenshot-thumb:hover {
+          border-color: var(--af-primary, #4edea3);
+          transform: scale(1.05);
+        }
+
+        .ticket-screenshot-thumb:active {
+          transform: scale(0.95);
+        }
+
+        /* 全屏 Lightbox 大图预览 */
+        .af-lightbox {
+          position: fixed;
+          inset: 0;
+          z-index: 2147483647;
+          background: rgba(0, 0, 0, 0.92);
+          backdrop-filter: blur(12px);
+          display: flex;
+          flex-direction: column;
+          align-items: center;
+          justify-content: center;
+          padding: 16px;
+          cursor: zoom-out;
+          animation: modal-pop 0.18s ease-out;
+        }
+
+        .af-lightbox-header {
+          position: absolute;
+          top: 16px;
+          left: 16px;
+          right: 16px;
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          color: #fff;
+          z-index: 10;
+        }
+
+        .af-lightbox-title {
+          font-size: 13px;
+          font-weight: 600;
+          color: #e5e7eb;
+          white-space: nowrap;
+          overflow: hidden;
+          text-overflow: ellipsis;
+          max-width: 80%;
+        }
+
+        .af-lightbox-close {
+          background: rgba(255, 255, 255, 0.15);
+          color: #fff;
+          border: none;
+          border-radius: 50%;
+          width: 32px;
+          height: 32px;
+          font-size: 18px;
+          cursor: pointer;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+        }
+
+        .af-lightbox-img {
+          max-width: 95vw;
+          max-height: 85vh;
+          object-fit: contain;
+          border-radius: 8px;
+          box-shadow: 0 10px 40px rgba(0, 0, 0, 0.8);
+          cursor: default;
         }
 
         .agent-reply-header {
@@ -1835,88 +2346,107 @@ export class AgentFeedbackWidget extends CustomElementBase {
 
           <!-- 弹窗主体 -->
           <div class="modal-body">
-            ${
-              this.activeTab === 'submit'
-                ? `
-                <!-- 遥测快照徽标预览 -->
-                <div class="telemetry-bar">
-                  <div class="tele-chip">📍 <strong>${telemetry.route}</strong></div>
-                  <div class="tele-chip">📱 <strong>${telemetry.viewport.width}×${telemetry.viewport.height}</strong> (DPR ${telemetry.viewport.dpr})</div>
-                  <div class="tele-chip">💻 <strong>${telemetry.platform.toUpperCase()}</strong></div>
-                  <div class="tele-chip">📝 <strong>${logs.length}</strong> 条日志</div>
-                </div>
+            <!-- 1. 新建反馈面板 -->
+            <div class="af-tab-panel af-tab-panel-submit" style="display: ${this.activeTab === 'submit' ? 'block' : 'none'};">
+              <!-- 遥测快照徽标预览 -->
+              <div class="telemetry-bar">
+                <div class="tele-chip">📍 <strong>${telemetry.route}</strong></div>
+                <div class="tele-chip">📱 <strong>${telemetry.viewport.width}×${telemetry.viewport.height}</strong> (DPR ${telemetry.viewport.dpr})</div>
+                <div class="tele-chip">💻 <strong>${telemetry.platform.toUpperCase()}</strong></div>
+                <div class="tele-chip">📝 <strong>${logs.length}</strong> 条日志</div>
+              </div>
 
+              ${
+                this.submitFeedbackMessage
+                  ? `<div class="alert alert-${this.submitFeedbackMessage.type}">${this.submitFeedbackMessage.text}</div>`
+                  : ''
+              }
+
+              <div class="form-group">
+                <label class="form-label">问题描述 / 优化建议</label>
+                <textarea
+                  class="feedback-textarea"
+                  placeholder="描述你在真机或浏览器中发现的问题、样式走位、交互异常或建议..."
+                >${this.feedbackContent}</textarea>
+              </div>
+
+              <!-- 截图附件 (支持多张上传，最多 6 张) -->
+              <div class="screenshot-section">
+                <div class="screenshot-actions">
+                  <button class="btn-secondary btn-capture-screen" ${this.attachedScreenshots.length >= 6 ? 'disabled' : ''}>
+                    📸 截取当前界面
+                  </button>
+                  <label class="btn-secondary ${this.attachedScreenshots.length >= 6 ? 'disabled' : ''}" style="margin: 0; cursor: pointer;">
+                    📁 上传本地截图 ${this.attachedScreenshots.length > 0 ? `(${this.attachedScreenshots.length}/6)` : ''}
+                    <input
+                      type="file"
+                      accept="image/*"
+                      multiple
+                      class="screenshot-file-input"
+                      style="display: none;"
+                      ${this.attachedScreenshots.length >= 6 ? 'disabled' : ''}
+                    />
+                  </label>
+                </div>
                 ${
-                  this.submitFeedbackMessage
-                    ? `<div class="alert alert-${this.submitFeedbackMessage.type}">${this.submitFeedbackMessage.text}</div>`
+                  this.attachedScreenshots.length > 0
+                    ? `
+                  <div class="screenshot-grid">
+                    ${this.attachedScreenshots
+                      .map(
+                        (shot, idx) => `
+                      <div class="screenshot-item">
+                        <img src="${shot}" class="screenshot-img" alt="截图预览 ${idx + 1}" title="点击查看大图" />
+                        <button class="btn-remove-shot" data-index="${idx}" title="移除此截图">✕</button>
+                      </div>
+                    `
+                      )
+                      .join('')}
+                  </div>
+                `
                     : ''
                 }
+              </div>
 
-                <div class="form-group">
-                  <label class="form-label">问题描述 / 优化建议</label>
-                  <textarea
-                    class="feedback-textarea"
-                    placeholder="描述你在真机或浏览器中发现的问题、样式走位、交互异常或建议..."
-                  >${this.feedbackContent}</textarea>
-                </div>
+              <button class="btn-submit" ${this.isSubmitting ? 'disabled' : ''}>
+                ${this.isSubmitting ? '正在提交...' : '🚀 提交并通知 AI Agent'}
+              </button>
+            </div>
 
-                <!-- 截图附件 (支持多张上传，最多 6 张) -->
-                <div class="screenshot-section">
-                  <div class="screenshot-actions">
-                    <button class="btn-secondary btn-capture-screen" ${this.attachedScreenshots.length >= 6 ? 'disabled' : ''}>
-                      📸 截取当前界面
-                    </button>
-                    <label class="btn-secondary ${this.attachedScreenshots.length >= 6 ? 'disabled' : ''}" style="margin: 0; cursor: pointer;">
-                      📁 上传本地截图 ${this.attachedScreenshots.length > 0 ? `(${this.attachedScreenshots.length}/6)` : ''}
-                      <input
-                        type="file"
-                        accept="image/*"
-                        multiple
-                        class="screenshot-file-input"
-                        style="display: none;"
-                        ${this.attachedScreenshots.length >= 6 ? 'disabled' : ''}
-                      />
-                    </label>
-                  </div>
-                  ${
-                    this.attachedScreenshots.length > 0
-                      ? `
-                    <div class="screenshot-grid">
-                      ${this.attachedScreenshots
-                        .map(
-                          (shot, idx) => `
-                        <div class="screenshot-item">
-                          <img src="${shot}" class="screenshot-img" alt="截图预览 ${idx + 1}" />
-                          <button class="btn-remove-shot" data-index="${idx}" title="移除此截图">✕</button>
-                        </div>
-                      `
-                        )
-                        .join('')}
-                    </div>
-                  `
-                      : ''
-                  }
-                </div>
-
-                <button class="btn-submit" ${this.isSubmitting ? 'disabled' : ''}>
-                  ${this.isSubmitting ? '正在提交...' : '🚀 提交并通知 AI Agent'}
-                </button>
-              `
-                : this.activeTab === 'history'
-                ? `
-                <div class="history-controls">
-                  <span style="font-size: 12px; color: var(--af-text-muted, #9ca3af);">共 ${this.totalTicketsCount || this.historyList.length} 条记录</span>
-                  <button class="btn-secondary btn-refresh-history">🔄 刷新</button>
-                </div>
+            <!-- 2. 历史与进度面板 -->
+            <div class="af-tab-panel af-tab-panel-history" style="display: ${this.activeTab === 'history' ? 'block' : 'none'};">
+              <div class="history-controls">
+                <span style="font-size: 12px; color: var(--af-text-muted, #9ca3af);">共 ${this.totalTicketsCount || this.historyList.length} 条记录</span>
+                <button class="btn-secondary btn-refresh-history">🔄 刷新</button>
+              </div>
+              <div class="timeline-view-wrapper">
                 ${this.renderTimelineView()}
-              `
-                : `
-                <!-- 自定义扩展 Tab 容器 -->
-                <div class="ext-tab-container" data-tab-id="${this.activeTab}"></div>
-              `
-            }
+              </div>
+            </div>
+
+            <!-- 3. 自定义扩展 Tab 面板 -->
+            ${extensions.map(ext => `
+              <div
+                class="af-tab-panel af-tab-panel-ext ext-tab-container"
+                data-tab-id="${ext.id}"
+                style="display: ${this.activeTab === ext.id ? 'block' : 'none'};"
+              ></div>
+            `).join('')}
           </div>
         </div>
+        ${
+          this.lightboxSrc
+            ? `
+          <div class="af-lightbox" title="点击任意空白处关闭">
+            <div class="af-lightbox-header">
+              <span class="af-lightbox-title">${this.lightboxTitle || '截图详情'}</span>
+              <button class="af-lightbox-close" type="button" aria-label="关闭">&times;</button>
+            </div>
+            <img src="${this.lightboxSrc}" class="af-lightbox-img" alt="大图预览" />
+          </div>
+        `
+            : ''
+        }
       </div>
     `;
   }

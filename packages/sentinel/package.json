@@ -1,5 +1,5 @@
 {
-  "name": "@agent-feedback/sentinel",
+  "name": "@lylyuanliang/agent-feedback-sentinel",
   "version": "1.0.0",
   "description": "Silent watcher CLI & pluggable AI Coding Agent wakeup adapters",
   "type": "module",
@@ -16,12 +16,22 @@
       "default": "./dist/index.js"
     }
   },
+  "files": [
+    "dist",
+    "bin",
+    "README.md",
+    "LICENSE"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
   "scripts": {
     "build": "tsc",
+    "prepublishOnly": "pnpm run build",
     "test": "node --experimental-strip-types --test tests/sentinel.test.ts"
   },
   "dependencies": {
-    "@agent-feedback/core": "workspace:*"
+    "@lylyuanliang/agent-feedback-core": "workspace:*"
   },
   "keywords": [
     "agent-feedback",

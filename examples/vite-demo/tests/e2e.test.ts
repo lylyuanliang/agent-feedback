@@ -172,8 +172,8 @@ describe('Task 5: Integration Playground & End-to-End Verification (examples/vit
       const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf-8'));
       assert.strictEqual(pkg.name, 'vite-demo');
       assert.strictEqual(pkg.type, 'module');
-      assert.ok(pkg.dependencies['@agent-feedback/vite-plugin'], 'Must depend on @agent-feedback/vite-plugin');
-      assert.ok(pkg.dependencies['@agent-feedback/client'], 'Must depend on @agent-feedback/client');
+      assert.ok(pkg.dependencies['@lylyuanliang/agent-feedback-vite-plugin'], 'Must depend on @lylyuanliang/agent-feedback-vite-plugin');
+      assert.ok(pkg.dependencies['@lylyuanliang/agent-feedback-client'], 'Must depend on @lylyuanliang/agent-feedback-client');
     });
 
     it('should have index.html with app mount container and main.ts module script', () => {
@@ -225,7 +225,7 @@ describe('Task 5: Integration Playground & End-to-End Verification (examples/vit
       assert.ok(res.headers.get('content-type')?.includes('application/javascript'));
 
       const code = await res.text();
-      assert.ok(code.includes("import '@agent-feedback/client';"), 'Virtual client code must import client package');
+      assert.ok(code.includes("import '@lylyuanliang/agent-feedback-client';"), 'Virtual client code must import client package');
       assert.ok(code.includes('Agent Feedback Bridge'), 'Virtual client code must log initialization message');
     });
 

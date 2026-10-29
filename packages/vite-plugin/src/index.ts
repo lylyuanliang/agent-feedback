@@ -11,7 +11,7 @@ import type {
   FeedbackStatus,
   FeedbackType,
   FeedbackTheme
-} from '@agent-feedback/core';
+} from '@lylyuanliang/agent-feedback-core';
 
 /**
  * 获取本地 YYYY-MM-DD 日期字符串
@@ -368,6 +368,7 @@ export function agentFeedback(options: AgentFeedbackPluginOptions = {}): AgentFe
 
                   if (savedPaths.length > 0) {
                     data.screenshots = savedPaths;
+                    delete (data as any).screenshot;
                   }
                 }
 
@@ -414,7 +415,7 @@ export function agentFeedback(options: AgentFeedbackPluginOptions = {}): AgentFe
                   telemetry: data.telemetry || {
                     route: 'cli',
                     viewport: { width: 0, height: 0, dpr: 1 },
-                    userAgent: '@agent-feedback/vite-plugin',
+                    userAgent: '@lylyuanliang/agent-feedback-vite-plugin',
                     platform: 'desktop'
                   }
                 };
@@ -579,7 +580,12 @@ export function agentFeedback(options: AgentFeedbackPluginOptions = {}): AgentFe
     },
 
     resolveId(id: string) {
-      if (id === '/@agent-feedback/client' || id === '@agent-feedback/client') {
+      if (
+        id === '/@agent-feedback/client' ||
+        id === '@agent-feedback/client' ||
+        id === '/@lylyuanliang/agent-feedback-client' ||
+        id === '@lylyuanliang/agent-feedback-client'
+      ) {
         return '\0agent-feedback-client-virtual';
       }
     },
@@ -592,13 +598,13 @@ export function agentFeedback(options: AgentFeedbackPluginOptions = {}): AgentFe
         // 输出虚拟客户端代码，驱动 Shadow DOM 自定义元素注册、主题透传与挂载
         return `
 if (typeof window !== 'undefined') {
-  (window as any).__AGENT_FEEDBACK_OPTIONS__ = {
+  window.__AGENT_FEEDBACK_OPTIONS__ = {
     theme: ${themeLiteral},
     primaryColor: ${colorLiteral},
     apiBase: ${apiBaseLiteral}
   };
 }
-import '@agent-feedback/client';
+import '@lylyuanliang/agent-feedback-client';
 console.log('[Agent Feedback Bridge] In-App nervous system initialized.');
         `.trim();
       }

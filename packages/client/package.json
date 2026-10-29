@@ -1,5 +1,5 @@
 {
-  "name": "@agent-feedback/client",
+  "name": "@lylyuanliang/agent-feedback-client",
   "version": "1.0.0",
   "description": "Shadow DOM Web Component and telemetry client for Agent Feedback Bridge",
   "type": "module",
@@ -13,12 +13,21 @@
       "default": "./dist/index.js"
     }
   },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
   "scripts": {
     "build": "tsc",
+    "prepublishOnly": "pnpm run build",
     "test": "node --experimental-strip-types --test tests/client.test.ts"
   },
   "dependencies": {
-    "@agent-feedback/core": "workspace:*"
+    "@lylyuanliang/agent-feedback-core": "workspace:*"
   },
   "license": "MIT"
 }

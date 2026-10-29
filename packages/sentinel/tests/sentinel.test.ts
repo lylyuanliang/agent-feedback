@@ -422,14 +422,14 @@ describe('@agent-feedback/sentinel - CLI Entrypoint (bin/cli.js)', () => {
   it('should print help text when invoked with --help', async () => {
     const { stdout, stderr } = await execAsync(`node "${cliPath}" --help`);
     assert.strictEqual(stderr, '');
-    assert.match(stdout, /@agent-feedback\/sentinel CLI/);
+    assert.match(stdout, /@lylyuanliang\/agent-feedback-sentinel CLI/);
     assert.match(stdout, /update-status/);
     assert.match(stdout, /mcp/);
   });
 
   it('should print version when invoked with --version', async () => {
     const { stdout } = await execAsync(`node "${cliPath}" --version`);
-    assert.match(stdout, /@agent-feedback\/sentinel v1\.0\.0/);
+    assert.match(stdout, /@lylyuanliang\/agent-feedback-sentinel v1\.0\.0/);
   });
 
   it('should update feedback status via update-status CLI command', async () => {

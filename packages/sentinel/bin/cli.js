@@ -10,13 +10,13 @@ import {
   startMcpServer,
   updateFeedbackStatus,
   insertNotice
-} from '../src/index.ts';
+} from '../dist/index.js';
 
 const rawArgs = process.argv.slice(2);
 
 function printHelp() {
   console.log(`
-@agent-feedback/sentinel CLI - In-App Agent Feedback Bridge
+@lylyuanliang/agent-feedback-sentinel CLI - In-App Agent Feedback Bridge
 
 用法:
   agent-feedback <command> [options]
@@ -98,7 +98,7 @@ async function main() {
   }
 
   if (options.version) {
-    console.log('@agent-feedback/sentinel v1.0.0');
+    console.log('@lylyuanliang/agent-feedback-sentinel v1.0.0');
     process.exit(0);
   }
 

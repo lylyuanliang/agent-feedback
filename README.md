@@ -1,9 +1,10 @@
-# Agent Feedback Bridge (@agent-feedback)
+# Agent Feedback Bridge (@lylyuanliang/agent-feedback-*)
 
 > **The In-App Nervous System & Live Loop for AI Coding Agents**<br>
 > 面向 AI Coding Agent 时代的端侧神经系统、自愈闭环桥梁与可扩展开发者浮动工作台
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![npm version](https://img.shields.io/npm/v/@lylyuanliang/agent-feedback-vite-plugin.svg?color=cb3837)](https://www.npmjs.com/package/@lylyuanliang/agent-feedback-vite-plugin)
 [![Zero-DCE](https://img.shields.io/badge/Production-Zero--DCE-green.svg)](#)
 [![Zero-Token-Sleep](https://img.shields.io/badge/Sentinel-0%25%20CPU%20%7C%200%20Token-purple.svg)](#)
 [![Theme-Ready](https://img.shields.io/badge/Design%20System-Theme%20Token%20Ready-orange.svg)](#)
@@ -26,6 +27,28 @@
                                                           ▼
 [端侧时间轴实时同步修复进展] <──(CLI/状态回写)── [唤醒 IDE 中的 Coding Agent 自愈闭环]
 ```
+
+---
+
+## 🏆 核心优势 (Core Advantages)
+
+不同于传统的简单反馈组件或单向文本日志收集器，**Agent Feedback Bridge** 是一套专为**人机结对开发、移动真机全息感知与本地 AI 闭环自愈**而生的全栈神经系统：
+
+1. 📱 **移动真机全场景工程化 (Mobile-First Touch & Native Experience)**
+   - **深度适配真实移动端**：专攻手机真机、原生容器（Capacitor / Cordova / React Native WebView）与移动 Web，绝非简陋的桌面网页工具；
+   - **工业级手势工程**：全贴边磁吸阻尼停靠、Pointer Events 级触控消抖（防误触误拖拽）、450ms 穿透门禁（彻底解决遮罩空白区伴随合成点击导致的误关闭）以及软键盘弹出防挤压与视口自适应。
+
+2. 🛰️ **端侧全息遥测与高保真真实视觉 (Holographic Telemetry & Real-DOM Capture)**
+   - **0 沟通成本现场装配**：一键自动捕获屏幕 DPR、真实视口尺寸、操作系统平台架构、页面 Hash 路由、以及最近 30 条 Console 报错与警告栈；
+   - **高保真轻量真实截屏**：采用 `html2canvas` 自动捕获当前界面的真实全屏视觉画面，智能 Canvas 压缩算法将原图压缩 99% 至 ~80KB 轻量高保真 JPEG，秒级通过局域网/穿透网络上传；同时支持手机相册上传最多 6 张实景照片，并提供全屏手势 Lightbox 大图预览。
+
+3. 🔄 **真正的端到端双向自愈闭环 (Bi-directional Self-Healing Neural Loop)**
+   - **打破“只报不修”的死胡同**：端侧手机提交 -> DevServer 日级分片落盘 -> 静默哨兵（0% CPU，0 Token 消耗）守候并开启 10 秒防抖聚合 -> 主动唤醒 IDE 本地 Coding Agent -> Agent 源码级诊断、精准修复并通过自动化测试 -> CLI 状态回写；
+   - **端侧无感进度复验**：端侧「历史与进度」时间轴内置 5 秒轻量自动轮询，工单修复后秒级变绿并直接展示 Agent 填写的详细自愈分析报告；支持 Agent / 流水线向端侧主动下发系统广播通知。
+
+4. 🔌 **开放扩展槽架构 (Extension Tabs Workbench)**
+   - **单一胶囊，无限扩展**：手机屏幕上仅需一个优雅悬浮胶囊，宿主应用通过 `registerExtensionTab` 规范即可无缝挂载专属业务能力（例如：内网穿透通信诊断、APK 流式断点续传在线更新、切屏保活等）；
+   - **100% 生产零残留 (Zero-DCE)**：生产构建（`vite build`）全量物理剥离，构建产物增加 0 字节，0 调试接口泄露，完全不影响生产性能与安全。
 
 ---
 
@@ -90,7 +113,7 @@ flowchart TD
 
 1. **第 1 阶段：应用极简接入 (Host App Integration)**
    - **0 业务侵入**：开发者仅需在宿主应用的 `vite.config.ts` 中注册 `agentFeedback()` 插件，无需修改任何业务页面或组件代码；
-   - **自动化挂载**：在开发模式下，插件会自动将 `@agent-feedback/client` 注入到 HTML 入口中，自挂载 `<agent-feedback-widget>` 悬浮胶囊；
+   - **自动化挂载**：在开发模式下，插件会自动将 `@lylyuanliang/agent-feedback-client` 注入到 HTML 入口中，自挂载 `<agent-feedback-widget>` 悬浮胶囊；
    - **生产零污染 (Zero-DCE)**：执行正式打包（`vite build`）时，插件内部配置了 Rollup 虚拟外部化策略，所有组件代码与调试接口 100% 物理消除，生产产物增加 0 字节。
 
 2. **第 2 阶段：端侧全息现场抓取 (Holographic In-App Capture)**
@@ -136,14 +159,14 @@ flowchart TD
 
 ---
 
-## 📦 Monorepo 子包结构
+## 📦 Monorepo 子包生态矩阵
 
-| 包名 | 职责与能力 |
-| :--- | :--- |
-| [`@agent-feedback/core`](packages/core) | 标准数据契约（InAppFeedback）、日级索引接口、扩展槽规范与启发式注入/破坏指令安全防御 |
-| [`@agent-feedback/client`](packages/client) | `<agent-feedback-widget>` Web Component、磁吸手势、流式时间轴、Theme Token 与扩展槽挂载器 |
-| [`@agent-feedback/vite-plugin`](packages/vite-plugin) | Vite/Rollup 构建插件、日级分片落盘引擎、DevServer 中间件与生产 Zero-DCE 剥离 |
-| [`@agent-feedback/sentinel`](packages/sentinel) | Node 原生静默哨兵 CLI（`npx agent-feedback watch/notice`）、10s 防抖聚合与多 IDE 适配器 |
+| 包名 | 最新版本 | 职责与能力 | 推荐安装命令 |
+| :--- | :--- | :--- | :--- |
+| [`@lylyuanliang/agent-feedback-vite-plugin`](packages/vite-plugin) | [![npm](https://img.shields.io/npm/v/@lylyuanliang/agent-feedback-vite-plugin.svg?color=cb3837)](https://www.npmjs.com/package/@lylyuanliang/agent-feedback-vite-plugin) | **核心推荐**：Vite 构建插件、日级分片落盘引擎、DevServer 中间件与生产 Zero-DCE 剥离 | `pnpm add -D @lylyuanliang/agent-feedback-vite-plugin` |
+| [`@lylyuanliang/agent-feedback-client`](packages/client) | [![npm](https://img.shields.io/npm/v/@lylyuanliang/agent-feedback-client.svg?color=cb3837)](https://www.npmjs.com/package/@lylyuanliang/agent-feedback-client) | `<agent-feedback-widget>` Web Component、手势工程、流式时间轴、多面板 KeepAlive 与扩展槽挂载器 | `pnpm add @lylyuanliang/agent-feedback-client` |
+| [`@lylyuanliang/agent-feedback-sentinel`](packages/sentinel) | [![npm](https://img.shields.io/npm/v/@lylyuanliang/agent-feedback-sentinel.svg?color=cb3837)](https://www.npmjs.com/package/@lylyuanliang/agent-feedback-sentinel) | Node 原生静默哨兵 CLI、10s 防抖聚合与多 IDE（Antigravity/Cursor/Claude Code）自愈适配器 | `npx agent-feedback watch` (免安装) 或 `pnpm add -D @lylyuanliang/agent-feedback-sentinel` |
+| [`@lylyuanliang/agent-feedback-core`](packages/core) | [![npm](https://img.shields.io/npm/v/@lylyuanliang/agent-feedback-core.svg?color=cb3837)](https://www.npmjs.com/package/@lylyuanliang/agent-feedback-core) | 底层标准契约（TypeScript Types）、日级索引接口、扩展槽规范与启发式注入/破坏指令防御 | `pnpm add @lylyuanliang/agent-feedback-core` |
 
 ---
 
@@ -151,11 +174,50 @@ flowchart TD
 
 ### 1. 安装依赖
 
+根据你的项目技术栈与包管理器，执行对应的安装命令：
+
+#### 方案 A：Vite 零侵入极简接入（最常用 · 推荐）
+只需安装开发依赖插件，开发期自动注入磁吸胶囊，生产构建（`vite build`）全量物理剥离（Zero-DCE）：
+
 ```bash
-npm install -D @agent-feedback/vite-plugin
-# 或
-pnpm add -D @agent-feedback/vite-plugin
+# npm
+npm install -D @lylyuanliang/agent-feedback-vite-plugin
+
+# pnpm
+pnpm add -D @lylyuanliang/agent-feedback-vite-plugin
+
+# yarn
+yarn add -D @lylyuanliang/agent-feedback-vite-plugin
+
+# bun
+bun add -d @lylyuanliang/agent-feedback-vite-plugin
 ```
+
+#### 方案 B：需要编写自定义扩展 Tab 或 TypeScript 类型定义
+若需要调用 `registerExtensionTab` 挂载业务面板（如在线升级、设备诊断）或编程式控制弹窗：
+
+```bash
+# npm
+npm install -D @lylyuanliang/agent-feedback-vite-plugin
+npm install @lylyuanliang/agent-feedback-client
+
+# pnpm
+pnpm add -D @lylyuanliang/agent-feedback-vite-plugin
+pnpm add @lylyuanliang/agent-feedback-client
+```
+
+#### 方案 C：固化静默哨兵 CLI 命令至工程
+若希望在项目内固化 `npm run sentinel` 脚本，可将哨兵包作为开发依赖安装：
+
+```bash
+# npm
+npm install -D @lylyuanliang/agent-feedback-sentinel
+
+# pnpm
+pnpm add -D @lylyuanliang/agent-feedback-sentinel
+```
+
+> **免安装运行提示**：也可以无需安装哨兵包，直接运行 `npx agent-feedback watch` 或 `pnpm dlx @lylyuanliang/agent-feedback-sentinel watch` 即用即启！
 
 ### 2. 在 Vite 中启用
 
@@ -163,7 +225,7 @@ pnpm add -D @agent-feedback/vite-plugin
 // vite.config.ts
 import { defineConfig } from 'vite'
 import vue from '@vitejs/plugin-vue' // 或 react()
-import agentFeedback from '@agent-feedback/vite-plugin'
+import agentFeedback from '@lylyuanliang/agent-feedback-vite-plugin'
 
 export default defineConfig({
   plugins: [
@@ -196,7 +258,7 @@ Agent Feedback Bridge 的核心理念是让 AI Coding Agent 能够直接感知**
 
 ### 1. 默认服务机制 (0 独立后端，同源内置)
 
-- `@agent-feedback/vite-plugin` 采用标准 Connect 中间件机制，**直接无缝挂载在宿主项目自身的 Vite DevServer 实例上**（无需额外启动独立后端服务、数据库或占用额外端口）；
+- `@lylyuanliang/agent-feedback-vite-plugin` 采用标准 Connect 中间件机制，**直接无缝挂载在宿主项目自身的 Vite DevServer 实例上**（无需额外启动独立后端服务、数据库或占用额外端口）；
 - 默认情况下，端侧客户端（`<agent-feedback-widget>`）发出的所有工单请求均采用**同源相对路径**（`/api/__agent_feedback/*`），默认自然请求到**当前项目自己的服务地址**。
 
 ### 2. 多端测试网络拓扑矩阵
@@ -240,7 +302,7 @@ agentFeedback({
 
 #### 方式 B: 运行时代码动态配置 (支持环境切换或用户配置面板)
 ```typescript
-import { setApiBase } from '@agent-feedback/client';
+import { setApiBase } from '@lylyuanliang/agent-feedback-client';
 
 // 当检测到原生容器或用户在调试设置中输入穿透地址时动态切换
 if (window.Capacitor?.isNativePlatform()) {
@@ -257,12 +319,12 @@ if (window.Capacitor?.isNativePlatform()) {
 
 ## 🔌 扩展槽功能指南 (Extension Tabs API)
 
-`@agent-feedback/client` 提供了灵活的扩展槽机制，允许宿主应用在同一个悬浮胶囊中挂载专属的开发者功能页签（如环境切换、离线包更新、通信诊断等），使移动端调试体验高度聚合，无需在界面上摆放多个悬浮按钮。
+`@lylyuanliang/agent-feedback-client` 提供了灵活的扩展槽机制，允许宿主应用在同一个悬浮胶囊中挂载专属的开发者功能页签（如环境切换、离线包更新、通信诊断等），使移动端调试体验高度聚合，无需在界面上摆放多个悬浮按钮。
 
 ### 注册自定义扩展 Tab 示例
 
 ```typescript
-import { registerExtensionTab } from '@agent-feedback/client'
+import { registerExtensionTab } from '@lylyuanliang/agent-feedback-client'
 import { createApp } from 'vue' // 支持 Vue / React / 原生 HTML
 import MyCustomDebugPanel from './components/MyCustomDebugPanel.vue'
 
@@ -299,7 +361,7 @@ if (import.meta.env.DEV) {
 
 > **提示 (Shadow DOM 样式隔离注意项)**：
 > 由于扩展内容挂载在 Web Component 的 Shadow DOM 内部，宿主页面的全局外部 CSS（如 Tailwind 全局原子类）默认不会穿透进去。
-> 建议在自定义扩展组件内使用内嵌样式或 Scoped CSS，并优先复用 `@agent-feedback` 提供的 `--af-*` 语义化设计 Token。
+> 建议在自定义扩展组件内使用内嵌样式或 Scoped CSS，并优先复用组件库提供的 `--af-*` 语义化设计 Token。
 
 ---
 
@@ -324,7 +386,7 @@ if (import.meta.env.DEV) {
 
 ## 🛠️ CLI 命令行工具链
 
-`@agent-feedback/sentinel` 提供了便捷的命令行能力：
+`@lylyuanliang/agent-feedback-sentinel` 提供了便捷的命令行能力：
 
 ```bash
 # 1. 启动静默监听哨兵

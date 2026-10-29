@@ -10,9 +10,9 @@
     "test": "node --experimental-strip-types --test tests/e2e.test.ts"
   },
   "dependencies": {
-    "@agent-feedback/client": "workspace:*",
-    "@agent-feedback/core": "workspace:*",
-    "@agent-feedback/vite-plugin": "workspace:*"
+    "@lylyuanliang/agent-feedback-client": "workspace:*",
+    "@lylyuanliang/agent-feedback-core": "workspace:*",
+    "@lylyuanliang/agent-feedback-vite-plugin": "workspace:*"
   },
   "devDependencies": {
     "typescript": "^5.6.3",

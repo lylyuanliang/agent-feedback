@@ -180,7 +180,7 @@ describe('@agent-feedback/vite-plugin Dev Server Virtual Module Injection', () =
     const plugin = agentFeedback();
     const code = plugin.load?.('\0agent-feedback-client-virtual');
     assert.ok(typeof code === 'string');
-    assert.ok(code.includes("import '@agent-feedback/client';"));
+    assert.ok(code.includes("import '@lylyuanliang/agent-feedback-client';"));
     assert.ok(code.includes('[Agent Feedback Bridge] In-App nervous system initialized.'));
     assert.strictEqual(plugin.load?.('other-id'), undefined);
   });

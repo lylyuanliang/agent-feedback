@@ -1,5 +1,5 @@
 {
-  "name": "@agent-feedback/core",
+  "name": "@lylyuanliang/agent-feedback-core",
   "version": "1.0.0",
   "description": "Core protocols, types, and state machine for Agent Feedback Bridge",
   "type": "module",
@@ -13,8 +13,17 @@
       "default": "./dist/index.js"
     }
   },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
   "scripts": {
     "build": "tsc",
+    "prepublishOnly": "pnpm run build",
     "test": "node --experimental-strip-types --test tests/core.test.ts"
   },
   "keywords": [
