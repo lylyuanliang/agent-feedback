@@ -55,7 +55,74 @@ flowchart TD
 
 ---
 
-## 3. 各主流智能体 vite.config.ts 完整配置配方库
+---
+
+## 3. 架构深度思考：为什么大部分 Agent 适配器都是 Webhook？
+
+在查阅配置配方时，许多开发者会产生一个直观的疑问：
+> **“为什么除了 Google Antigravity 和 MCP 之外，像 Claude Code、DSH、Codex、ZCode、钉钉飞书等绝大多数 Agent，在配置里使用的都是 `adapter: 'webhook'`？”**
+
+这背后并非巧合，而是源于 **AI 智能体的底层通信物理规律** 与 **框架的通用解耦哲学**。
+
+### 3.1 行业物理规律：AI 智能体的底层通信本质只有「3 种形态」
+
+抛开市场上五花八门的产品叫法（Claude Code、Cursor、DeepSeek DSH、Antigravity、OpenAI Codex、Cline 等），从操作系统进程与网络通信层来看，智能体与外部工具的交互机制在物理层面上只有 **3 种流派**：
+
+```mermaid
+flowchart TD
+    subgraph ThreeParadigms["3 大主流通信机制"]
+        A["🪐 流派 1：原生宿主私有 IPC<br>(如 Google Antigravity)"]
+        B["🔌 流派 2：标准化上下文拉取<br>(如 Cursor / Windsurf MCP)"]
+        C["⚡ 流派 3：外部事件钩子 Hook<br>(如 Claude / DSH / Codex / 企业网关)"]
+    end
+
+    A -->|"深潜机制"| A1["反查本地会话 SQLite + 底层管道<br>主动唤醒当前窗口会话"]
+    B -->|"协议机制"| B1["MCP Stdio/RPC 协议<br>Agent 调用 get_pending_feedback 拉取"]
+    C -->|"万能机制"| C1["广义 Webhook 调度器<br>• 本地子进程 CLI (webhookCommand)<br>• 远程 HTTP POST (webhookUrl)"]
+```
+
+| 通信机制流派 | 代表智能体 / 平台 | 底层物理协议 | 谁是主动方？ | 适用适配器类型 |
+| :--- | :--- | :--- | :--- | :--- |
+| **流派 1：原生宿主私有 IPC (Deep Native)** | **Google Antigravity** | 本地 SQLite 会话数据库反查 + 私有底层 IPC 管道 (`agentapi send-message`) | **哨兵主动**：直接把高优消息注入开发者当前正打开的 IDE 对话流中 | `adapter: 'antigravity'` |
+| **流派 2：标准协议拉取 (Standard Pull)** | **Cursor、Windsurf、VS Code (Cline / Roo)** | Model Context Protocol (MCP) Stdio / JSON-RPC 协议 | **Agent 主动**：Agent 在当前 IDE 上下文内调用 `get_pending_feedback()` 工具拉取工单 | `adapter: 'mcp'` |
+| **流派 3：事件钩子触发 (Event Hook)** | **Claude Code、DeepSeek DSH、OpenAI Codex、ZCode、企业调度中心** | **系统子进程创建 (`child_process.exec`) 或 HTTP POST 请求** | **哨兵主动**：在工单防抖聚合完成后，对外拉起新进程或推送结构化数据 | `adapter: 'webhook'` |
+
+从上表可以看出：**除了 Antigravity（深度私有 API）与 Cursor（MCP 工具拉取）之外，市面上 80% 以上的智能体和平台，全部物理归属于「流派 3」！**
+
+---
+
+### 3.2 概念澄清：广义 Webhook vs 狭义 Webhook
+
+许多开发者对 Webhook 的理解往往局限于**狭义 Webhook**：
+> *通过 HTTP POST 向远程 Web 地址（如钉钉机器人、自建服务器）推送一段 JSON 数据。*
+
+但在系统设计与事件驱动架构（EDA）中，**广义的 Webhook / Hook（钩子）** 代表的是一种**“事件发生后的外部触发机制”**：
+> *“当手机端工单聚合完毕这个事件发生时，对外触发一个特定动作。”*
+
+这个对外触发的动作在操作系统层面只有两种选择：
+1. **触发本地命令行子进程（Command Hook）**：
+   - 配置 `webhookCommand: 'claude -p "..."'` 或 `'dsh -q "..."'`；
+   - 哨兵通过 Node.js 原生 `child_process.exec()` 拉起独立的 CLI Agent 进程，携带环境变量 `$FEEDBACK_DIR` 与 `$FEEDBACK_IDS` 前往工作区排查代码。
+2. **触发远程网络端点（HTTP Webhook）**：
+   - 配置 `webhookUrl: 'https://...'`；
+   - 哨兵通过 HTTP POST 将包含截图和堆栈的标准 JSON 推送到企业网关或自动化集群。
+
+为了避免让开发者在 `vite.config.ts` 中面对 `cli-adapter`、`command-adapter`、`shell-adapter`、`http-adapter` 等繁琐琐碎的细分概念，SDK 框架将这两种**“向外部派单触发”**的通用行为，统一收拢在 **`webhook`（外部钩子调度器）** 这一个总适配器下。
+
+---
+
+### 3.3 为什么 Webhook 是连接百家争鸣生态的“最大公约数”？
+
+命令行（CLI）与网络请求（HTTP）是整个软件工程世界**最通用、最无技术壁垒的“通用普通话”**：
+* 无论未来市场上涌现出多少种全新的终端 Agent 工具（如 X-Agent、Y-Code）；
+* 无论你的企业是用 Python、Go 还是 Java 搭建的私有 AI 任务派单系统；
+* **你完全不需要等待 `agent-feedback` 针对新工具发布专用适配器**，只需在 `webhookCommand` 或 `webhookUrl` 中填入一行命令或一个网址，就能在 1 分钟内完成接入闭环。
+
+这就是为什么 Webhook 承担了连接绝大多数智能体的“万能通用胶水”角色。
+
+---
+
+## 4. 各主流智能体 vite.config.ts 完整配置配方库
 
 > [!IMPORTANT]
 > **⚠️ 核心对应关系：`storageDir` 与命令 Prompt 中的检索路径**
@@ -66,7 +133,7 @@ flowchart TD
 >    - `$FEEDBACK_COUNT`：本次批次包含的工单总数。
 >    因此，你既可以直接书写匹配的目录路径，也可以直接在 Prompt 中引用 `$FEEDBACK_DIR` 实现与配置项的动态解耦！
 
-### 3.1 Google Antigravity 接入配方
+### 4.1 Google Antigravity 接入配方
 ```typescript
 // vite.config.ts
 import { defineConfig } from 'vite';
@@ -89,7 +156,7 @@ export default defineConfig({
 
 ---
 
-### 3.2 Claude Code / OpenAI Codex 命令行接入配方
+### 4.2 Claude Code / OpenAI Codex 命令行接入配方
 ```typescript
 // vite.config.ts
 import { defineConfig } from 'vite';
@@ -114,7 +181,7 @@ export default defineConfig({
 
 ---
 
-### 3.3 DSH (DeepSeek / 自研终端 Shell Agent) 接入配方
+### 4.3 DSH (DeepSeek / 自研终端 Shell Agent) 接入配方
 ```typescript
 // vite.config.ts
 import { defineConfig } from 'vite';
@@ -139,7 +206,7 @@ export default defineConfig({
 
 ---
 
-### 3.4 ZCode (企业内部定制 / 平台级 AI Agent) 接入配方
+### 4.4 ZCode (企业内部定制 / 平台级 AI Agent) 接入配方
 针对企业内部自研的私有化 ZCode 智能体平台，支持 **CLI 桥接** 与 **云端 Webhook** 双通道：
 
 #### 模式 1：ZCode 本地命令行派单
@@ -187,7 +254,7 @@ export default defineConfig({
 
 ---
 
-### 3.5 Cursor / Windsurf (MCP 标准工具接入配方)
+### 4.5 Cursor / Windsurf (MCP 标准工具接入配方)
 #### 1. 编辑 `vite.config.ts`：
 ```typescript
 import { defineConfig } from 'vite';
@@ -221,7 +288,7 @@ export default defineConfig({
 
 ---
 
-### 3.6 通用企业私有云 / Webhook 平台接入配方
+### 4.6 通用企业私有云 / Webhook 平台接入配方
 ```typescript
 // vite.config.ts
 import { defineConfig } from 'vite';
@@ -265,7 +332,7 @@ export default defineConfig({
 
 ---
 
-## 4. Agent 自愈闭环的标准规则 (建议写入项目 AGENTS.md / Cursor Rules)
+## 5. Agent 自愈闭环的标准规则 (建议写入项目 AGENTS.md / Cursor Rules)
 
 为了让任何新接手的 Agent 都能严格规范地完成闭环，建议在项目规则文件中加入以下 3 步规范：
 
