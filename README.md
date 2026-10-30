@@ -9,11 +9,13 @@
 [![Zero-Token-Sleep](https://img.shields.io/badge/Sentinel-0%25%20CPU%20%7C%200%20Token-purple.svg)](#)
 [![Theme-Ready](https://img.shields.io/badge/Design%20System-Theme%20Token%20Ready-orange.svg)](#)
 
+> 📖 **官方多智能体接入生态指南**：针对不同智能体的能力准入矩阵、会话路由底层原理与企业级派单拓扑，请参阅专题文档：[**《智能体生态接入与多 Agent 闭环指南》**](docs/multi-agent-integration-guide.md)
+
 ---
 
 ## 🌟 为什么需要 Agent Feedback Bridge？
 
-在 AI Coding Agent（Antigravity、Cursor、Claude Code、Codex 等）时代，开发者与 AI 结对编程的痛点依然存在于**“运行时感知与真机还原”**：
+在 AI Coding Agent（Antigravity、Cursor、Claude Code、Codex、DSH、ZCode 等）时代，开发者与 AI 结对编程的痛点依然存在于**“运行时感知与真机还原”**：
 - **现场还原成本高**：在手机真机、移动端 Web 或桌面端测试时发现 Bug，传统方式需要切出应用、手工截屏、打开 IDE 聊天框打字描述环境；
 - **遥测数据碎片化**：现场报错堆栈、控制台异常、网络状态、DOM 快照与精确视口难以一并提供给 AI；
 - **传统工具无法闭环**：传统 APM/反馈工具（Sentry、Marker.io）是将工单发给人（Jira/Slack），而我们需要的是**直接唤醒本地 IDE 中的 Coding Agent 自行分析并热修复**。
@@ -73,7 +75,7 @@ flowchart TD
         D -->|Connect 中间件校验| E["<b>本地日级分片存储引擎</b><br/>feedback_YYYY-MM-DD.json<br/>+ feedback_index.json 增量索引"]
         E -->|文件落盘触发| F["<b>Node 原生静默哨兵守候</b><br/>随 DevServer 伴生拉起<br/><i>(平时 0% CPU · 0 Token 纯休眠)</i>"]
         F -->|捕获新工单| G{"<b>10 秒防抖聚合窗口</b><br/>归并多图连发与连续追评"}
-        G -->|倒计时结束| H["<b>主动分发给对应 Agent</b><br/>Antigravity / Claude Code / Cursor / Webhook"]
+        G -->|倒计时结束| H["<b>主动分发给对应 Agent</b><br/>Antigravity / Claude Code / DSH / ZCode / Cursor"]
     end
 
     subgraph P4 ["🤖 阶段四 · Coding Agent 源码自愈 (Agent Reasoning & Code Repair)"]
@@ -131,11 +133,13 @@ if (import.meta.env.DEV) {
 ```
 
 ### 步骤 3：在 `vite.config.ts` 启用插件与哨兵
-根据你当前使用的 Agent 类型，直接复制下一节对应的**开箱即用配方**！
+根据你团队当前使用的 Agent 类型，直接复制下一节对应的**开箱即用配方**！
 
 ---
 
 ## 🎯 各类型 Coding Agent 配置配方库 (Agent Recipes)
+
+> 💡 **智能体接入生态指南**：想要深入了解各 Agent 的能力准入矩阵、会话路由细节与自动化流水线？请参阅完整生态手册：[**《智能体生态接入与多 Agent 闭环指南》**](docs/multi-agent-integration-guide.md)。
 
 `agent-feedback` 是一套**与特定智能体完全解耦的开放网桥**。无论你使用的是哪种 Agent，都能按图索骥、1 行配置跑通闭环：
 
@@ -163,8 +167,8 @@ export default defineConfig({
 
 ---
 
-### 🟣 配方 B：Claude Code / Codex CLI / Aider（Headless CLI 自动拉起）
-适合喜欢在终端使用 `claude`、`codex` 或 `aider` 命令行 Agent 的开发者。手机端反馈防抖收集完毕后，哨兵**自动在系统后台执行 CLI 命令唤醒 Agent 独立修复会话**。
+### 🟣 配方 B：Claude Code / OpenAI Codex（Headless CLI 自动拉起）
+适合喜欢在终端使用 `claude` 或 `codex` 命令行 Agent 的开发者。手机端反馈防抖收集完毕后，哨兵**自动在系统后台执行 CLI 命令唤醒 Agent 独立修复会话**。
 
 ```typescript
 // vite.config.ts
@@ -189,7 +193,81 @@ export default defineConfig({
 
 ---
 
-### 🔵 配方 C：Cursor / Windsurf / VS Code (Cline/Roo Code)（标准 MCP 协议）
+### ⚡ 配方 C：DSH (DeepSeek / 自研终端 Shell Agent)
+适合采用 DeepSeek 驱动的本地命令行终端自动化 Agent（DSH）团队。哨兵防抖收集后，自动触发轻量 Shell 任务并自动确认执行：
+
+```typescript
+// vite.config.ts
+import { defineConfig } from 'vite';
+import { agentFeedback } from '@lylyuanliang/agent-feedback-vite-plugin';
+
+export default defineConfig({
+  plugins: [
+    agentFeedback({
+      storageDir: 'scratch/feedback',
+      sentinel: {
+        autoStart: true,
+        debounceSeconds: 10,
+        adapter: 'webhook',
+        // 通过 DSH 自动化执行缺陷修复并回写状态
+        webhookCommand: 'dsh --auto-confirm -q "检测到手机端新工单(ID: $FEEDBACK_IDS)，请读取 scratch/feedback 目录排查并修复源码，通过单测后调用 npx agent-feedback update-status 回写结果"'
+      }
+    })
+  ]
+});
+```
+
+---
+
+### 🏢 配方 D：ZCode (企业内部定制 / 平台级 AI Agent)
+针对企业内部自研的私有化 ZCode 智能体平台，支持 **CLI 任务派发** 或 **企业 Webhook 网关** 双模式：
+
+#### 模式 1：ZCode 本地命令行派单
+```typescript
+// vite.config.ts
+import { defineConfig } from 'vite';
+import { agentFeedback } from '@lylyuanliang/agent-feedback-vite-plugin';
+
+export default defineConfig({
+  plugins: [
+    agentFeedback({
+      storageDir: 'scratch/feedback',
+      sentinel: {
+        autoStart: true,
+        debounceSeconds: 10,
+        adapter: 'webhook',
+        webhookCommand: 'zcode task dispatch --project-path . --task-type bugfix --meta scratch/feedback/feedback_queue.json'
+      }
+    })
+  ]
+});
+```
+
+#### 模式 2：ZCode 云端平台调度派单
+```typescript
+// vite.config.ts
+import { defineConfig } from 'vite';
+import { agentFeedback } from '@lylyuanliang/agent-feedback-vite-plugin';
+
+export default defineConfig({
+  plugins: [
+    agentFeedback({
+      storageDir: 'scratch/feedback',
+      sentinel: {
+        autoStart: true,
+        debounceSeconds: 10,
+        adapter: 'webhook',
+        // 将结构化全息工单直接推送到企业 ZCode 调度服务中心
+        webhookUrl: 'https://zcode.internal.company.com/api/v1/agent-feedback/webhook'
+      }
+    })
+  ]
+});
+```
+
+---
+
+### 🔵 配方 E：Cursor / Windsurf / VS Code (Cline/Roo Code)（标准 MCP 协议）
 适合日常在 Cursor、Windsurf 或 VS Code 中与 AI Composer/Chat 结对的开发者。哨兵直接化身为标准的 Stdio MCP 工具服务。
 
 #### 1. 配置 `vite.config.ts`：
@@ -225,8 +303,8 @@ export default defineConfig({
 
 ---
 
-### 🟠 配方 D：企业私有平台 / 钉钉飞书企微机器人（HTTP Webhook 派单）
-适合团队拥有自建 AI 任务分配网关、自动化 CI/CD 平台或内部调度机器人的企业级场景。
+### 🟠 配方 F：通用 Webhook HTTP / 钉钉飞书企微机器人
+适合团队拥有自建任务分发网关、CI/CD 自动化流水线或群聊机器人的企业级场景。
 
 ```typescript
 // vite.config.ts
@@ -259,28 +337,28 @@ export default defineConfig({
 > **不是 Agent 满地找会话，而是哨兵把工单精确送到了 Agent 嘴边！**
 > 业务 Agent 根本不需要知道“底层会话是怎么路由的”，它只需要专注做它最擅长的事：**读工单、改代码、跑单测、回写状态**。
 
-### 四大形态的会话确立原理：
+### 各大形态的会话确立原理：
 
 ```mermaid
 flowchart LR
     Feedback["📱 端侧提交反馈"] --> Sentinel["🛰️ 哨兵防抖收集 (10s)"]
 
     Sentinel -->|"① Antigravity"| C1["反查本地会话 DB<br>agentapi send-message"] --> S1["当前工作区活跃会话<br>(会话上下文即刻唤醒)"]
-    Sentinel -->|"② Headless CLI"| C2["Shell 执行命令<br>claude -p '...'"] --> S2["专属修复任务新会话<br>(单次任务生命周期)"]
-    Sentinel -->|"③ Cursor/Windsurf"| C3["MCP Stdio Server<br>get_pending_feedback"] --> S3["IDE Composer 当前窗口<br>(工作区上下文天然绑定)"]
-    Sentinel -->|"④ 企业私有平台"| C4["HTTP POST Webhook<br>推送结构化 JSON"] --> S4["云端任务调度器<br>(分配后台 Agent 实例跑工单)"]
+    Sentinel -->|"② Headless CLI<br>(Claude/Codex/DSH)"| C2["Shell 执行命令<br>claude -p / dsh -q"] --> S2["专属修复任务新会话<br>(单次任务独立生命周期)"]
+    Sentinel -->|"③ 企业平台<br>(ZCode/Webhook)"| C4["CLI 派单 / HTTP POST<br>推送结构化 JSON"] --> S4["企业调度器 / ZCode 实例<br>(自动分配后台 Agent 跑工单)"]
+    Sentinel -->|"④ IDE 原生 Agent<br>(Cursor/Windsurf)"| C3["MCP Stdio Server<br>get_pending_feedback"] --> S3["IDE Composer 当前窗口<br>(工作区上下文天然绑定)"]
 ```
 
 1. **Google Antigravity 会话探测原理**：
    - 如果是在 IDE 内部启动，子进程拥有私有环境变量 `$env:ANTIGRAVITY_CONVERSATION_ID`，哨兵直接获取当前会话 ID；
    - 如果是在外部终端手动输入 `npm run dev`，哨兵内置 Node 原生 SQLite 查询引擎，只读读取 `~/.gemini/antigravity/conversation_summaries.db`，通过比对数据库中活跃会话绑定的工作区路径（`CWD Matching`），**反向精准查出当前项目对应的会话 ID**；
    - 哨兵通过官方底层 IPC 工具 `agentapi send-message <id>` 将高优先级消息直接注入该会话的上下文输入流中，实现如同微信收到高优消息般的毫秒级响应。
-2. **Claude Code / Codex 命令行会话原理**：
-   - 哨兵通过 `webhookCommand` 执行 `claude -p "..."`，拉起的每一个 CLI 进程本身就是一个针对该 Bugfix 任务的独立会话，任务完成后自动生成 commit 并交付。
-3. **Cursor / Windsurf MCP 工具会话原理**：
-   - 开发者是在当前 IDE 打开的工程上下文里与 Composer/Chat 对话，MCP 工具挂载在当前工作区，Agent 调用 `get_pending_feedback()` 拉取工单，工作区与工程上下文天然对应。
-4. **企业自研平台 Webhook 会话原理**：
+2. **Claude Code / Codex / DSH 命令行会话原理**：
+   - 哨兵通过 `webhookCommand` 执行 `claude -p "..."` 或 `dsh -q "..."`，拉起的每一个 CLI 进程本身就是一个针对该 Bugfix 任务的独立会话，任务完成后自动生成 commit 并交付。
+3. **ZCode 企业平台会话原理**：
    - 包含截图与报错堆栈的标准 JSON 数据推送到企业的网关，企业的任务调度系统根据项目仓库分配一个无状态 Agent 容器或流水线任务执行自动修复。
+4. **Cursor / Windsurf MCP 工具会话原理**：
+   - 开发者是在当前 IDE 打开的工程上下文里与 Composer/Chat 对话，MCP 工具挂载在当前工作区，Agent 调用 `get_pending_feedback()` 拉取工单，工作区与工程上下文天然对应。
 
 ---
 

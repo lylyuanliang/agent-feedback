@@ -18,8 +18,8 @@ flowchart TD
     Debounce -->|"启发式安全分诊"| Dispatcher{"🔄 适配器路由器<br>(--adapter)"}
 
     Dispatcher -->|"antigravity"| Antigravity["🪐 Antigravity<br>(工作区反查 -> 毫秒级主动唤醒当前会话)"]
-    Dispatcher -->|"webhook (--webhook-cmd)"| CLI_Agents["💻 Headless CLI Agents<br>• Claude Code (claude -p)<br>• OpenAI Codex (codex exec)<br>• Aider / DSH CLI"]
-    Dispatcher -->|"webhook (--webhook-url)"| Webhook_Agents["🌐 云端 / 平台级 Agents<br>• 企业任务调度平台 / CI 流水线<br>• 自建 Webhook 服务 / 企业微信 / 钉钉"]
+    Dispatcher -->|"webhook (--webhook-cmd)"| CLI_Agents["💻 Headless CLI Agents<br>• Claude Code (claude -p)<br>• OpenAI Codex (codex exec)<br>• DSH / DeepSeek Shell<br>• ZCode 内部自研 CLI"]
+    Dispatcher -->|"webhook (--webhook-url)"| Webhook_Agents["🌐 云端 / 平台级 Agents<br>• ZCode 任务调度中心<br>• 自建 Webhook 服务 / 企业微信 / 钉钉"]
     Dispatcher -->|"mcp (Stdio Server)"| MCP_Agents["🔌 MCP 协议智能体<br>• Cursor / Windsurf<br>• Claude Desktop / Code<br>• VS Code (Cline / Roo Code)"]
 
     Antigravity -->|"源码诊断修复 + 测试闭环"| Fix["🛠️ 自动化排查与源码修复"]
@@ -42,14 +42,16 @@ flowchart TD
 > **“不是 Agent 满地找会话，而是哨兵把工单精确送到了 Agent 嘴边！”**
 > 业务 Agent 根本不需要知道“底层会话是怎么路由的”，它只需要专注做它最擅长的事：**读工单、改代码、跑单测、回写状态**。
 
-### 四大形态的会话确立原理：
+### 各大形态的会话确立原理：
 
 | 智能体形态 | 会话是如何定位与确立的？ | 开发者需要做什么？ |
 | :--- | :--- | :--- |
 | **Google Antigravity** | 哨兵反向查询本地 SQLite 数据库，通过比对活跃会话打开的工作区路径（`CWD Matching`）自动定位会话 ID，调用官方 `agentapi send-message <id>` 把高优工单塞入会话。 | **0 配置**。哨兵原生自动完成路由。 |
-| **Claude Code / Codex / Aider** | 哨兵通过 `webhookCommand` 调用 Shell 命令拉起 `claude -p "..."`，拉起的命令行进程本身就是一个独立的修复任务会话，修改完代码后自动退出。 | 在 `vite.config.ts` 里配好命令即可。 |
+| **Claude Code / Codex** | 哨兵通过 `webhookCommand` 调用 Shell 命令拉起 `claude -p "..."`，拉起的命令行进程本身就是一个独立的修复任务会话，修改完代码后自动退出。 | 在 `vite.config.ts` 里配好命令即可。 |
+| **DSH (DeepSeek Shell)** | 哨兵调用 `dsh --auto-confirm -q "..."`，自动创建基于 DeepSeek 模型的轻量 CLI 修复会话，自动定位并修复代码。 | 在 `vite.config.ts` 里配置 `dsh` 命令。 |
+| **ZCode (企业内部平台)** | 哨兵通过 `zcode task dispatch` 命令行或 HTTP Webhook 推送，由企业内部调度系统自动分发到对应的项目专属修复实例。 | 配置 `zcode` 命令或指定内部 Webhook URL。 |
 | **Cursor / Windsurf / VS Code** | 开发者是在当前 IDE 打开的项目工程上下文里与 Agent 对话，通过 MCP 协议挂载工具，Agent 在当前窗口调用 `get_pending_feedback()` 拉取，工作区上下文天然绑定。 | 在 `.cursor/mcp.json` 注册一次 MCP 服务。 |
-| **企业私有平台 / Webhook** | 哨兵将包含报错堆栈与截图的 JSON 数据 POST 到企业网关，企业的任务调度器根据仓库地址自动分配一个后台 Agent 实例去跑任务。 | 在 `vite.config.ts` 里填上 HTTP Webhook URL。 |
+| **通用企业 Webhook** | 哨兵将包含报错堆栈与截图的 JSON 数据 POST 到企业网关，企业的任务调度器根据仓库地址自动分配一个后台 Agent 实例去跑任务。 | 在 `vite.config.ts` 里填上 HTTP Webhook URL。 |
 
 ---
 
@@ -78,7 +80,7 @@ export default defineConfig({
 
 ---
 
-### 3.2 Claude Code 命令行接入配方
+### 3.2 Claude Code / OpenAI Codex 命令行接入配方
 ```typescript
 // vite.config.ts
 import { defineConfig } from 'vite';
@@ -103,7 +105,80 @@ export default defineConfig({
 
 ---
 
-### 3.3 Cursor / Windsurf (MCP 标准工具接入配方)
+### 3.3 DSH (DeepSeek / 自研终端 Shell Agent) 接入配方
+```typescript
+// vite.config.ts
+import { defineConfig } from 'vite';
+import { agentFeedback } from '@lylyuanliang/agent-feedback-vite-plugin';
+
+export default defineConfig({
+  plugins: [
+    agentFeedback({
+      storageDir: 'scratch/feedback',
+      sentinel: {
+        autoStart: true,
+        debounceSeconds: 10,
+        adapter: 'webhook',
+        // 通过 DSH 自动执行缺陷定位并回写状态
+        webhookCommand: 'dsh --auto-confirm -q "检测到手机端新工单(ID: $FEEDBACK_IDS)，请读取 scratch/feedback 目录排查并修复源码，通过单测后调用 npx agent-feedback update-status 回写结果"'
+      }
+    })
+  ]
+});
+```
+- **闭环效果**：自动调起轻量终端 DSH 进程，结合 DeepSeek 深度代码推理模型自动修复代码并交付。
+
+---
+
+### 3.4 ZCode (企业内部定制 / 平台级 AI Agent) 接入配方
+针对企业内部自研的私有化 ZCode 智能体平台，支持 **CLI 桥接** 与 **云端 Webhook** 双通道：
+
+#### 模式 1：ZCode 本地命令行派单
+```typescript
+// vite.config.ts
+import { defineConfig } from 'vite';
+import { agentFeedback } from '@lylyuanliang/agent-feedback-vite-plugin';
+
+export default defineConfig({
+  plugins: [
+    agentFeedback({
+      storageDir: 'scratch/feedback',
+      sentinel: {
+        autoStart: true,
+        debounceSeconds: 10,
+        adapter: 'webhook',
+        webhookCommand: 'zcode task dispatch --project-path . --task-type bugfix --meta scratch/feedback/feedback_queue.json'
+      }
+    })
+  ]
+});
+```
+
+#### 模式 2：ZCode 云端平台调度派单
+```typescript
+// vite.config.ts
+import { defineConfig } from 'vite';
+import { agentFeedback } from '@lylyuanliang/agent-feedback-vite-plugin';
+
+export default defineConfig({
+  plugins: [
+    agentFeedback({
+      storageDir: 'scratch/feedback',
+      sentinel: {
+        autoStart: true,
+        debounceSeconds: 10,
+        adapter: 'webhook',
+        // 推送到企业内部集中式智能体任务网关
+        webhookUrl: 'https://zcode.internal.company.com/api/v1/agent-feedback/webhook'
+      }
+    })
+  ]
+});
+```
+
+---
+
+### 3.5 Cursor / Windsurf (MCP 标准工具接入配方)
 #### 1. 编辑 `vite.config.ts`：
 ```typescript
 import { defineConfig } from 'vite';
@@ -137,7 +212,7 @@ export default defineConfig({
 
 ---
 
-### 3.4 企业私有云 / Webhook 平台接入配方
+### 3.6 通用企业私有云 / Webhook 平台接入配方
 ```typescript
 // vite.config.ts
 import { defineConfig } from 'vite';
