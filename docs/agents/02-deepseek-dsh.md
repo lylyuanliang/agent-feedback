@@ -18,7 +18,7 @@ DSH 是基于 DeepSeek 代码推理大模型的本地命令行终端智能体：
 
 ---
 
-## 2. 推荐配置配方 (`vite.config.ts`)
+## 2. 推荐配置方案 (`vite.config.ts`)
 
 ```typescript
 // vite.config.ts

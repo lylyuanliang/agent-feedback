@@ -59,7 +59,7 @@ flowchart TD
 
 ## 3. 架构深度思考：为什么大部分 Agent 适配器都是 Webhook？
 
-在查阅配置配方时，许多开发者会产生一个直观的疑问：
+在查阅各智能体的接入方案时，许多开发者会产生一个直观的疑问：
 > **“为什么除了 Google Antigravity 和 MCP 之外，像 Claude Code、DSH、Codex、ZCode、钉钉飞书等绝大多数 Agent，在配置里使用的都是 `adapter: 'webhook'`？”**
 
 这背后并非巧合，而是源于 **AI 智能体的底层通信物理规律** 与 **框架的通用解耦哲学**。

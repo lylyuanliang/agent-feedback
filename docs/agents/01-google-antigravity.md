@@ -17,7 +17,7 @@ Google Antigravity 接入是体验最好、响应最敏捷的模式：
 
 ---
 
-## 2. 极简配置配方 (`vite.config.ts`)
+## 2. 极简配置方案 (`vite.config.ts`)
 
 无需指定任何命令，哨兵默认自适应为 Antigravity 模式：
 

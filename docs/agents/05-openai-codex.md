@@ -1,6 +1,6 @@
 # OpenAI Codex CLI 接入指南
 
-> **验证状态**：⏳ **待实测验证 (理论配方)** (Pending Verification)
+> **验证状态**：⏳ **待实测验证 (基准方案)** (Pending Verification)
 > **交互流派**：流派 3（Headless CLI 外部命令事件钩子）
 > **目标工具**：OpenAI 命令行生态工具 (`codex exec "..."` / `gh copilot`)
 
@@ -16,7 +16,7 @@
 
 ---
 
-## 2. 推荐配置配方 (`vite.config.ts`)
+## 2. 推荐配置方案 (`vite.config.ts`)
 
 ```typescript
 // vite.config.ts

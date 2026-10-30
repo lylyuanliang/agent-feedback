@@ -1,6 +1,6 @@
 # 通用企业 Webhook / 群机器人通知接入指南
 
-> **验证状态**：⏳ **待实测验证 (理论配方)** (Pending Verification)
+> **验证状态**：⏳ **待实测验证 (基准方案)** (Pending Verification)
 > **交互流派**：流派 3（广义事件钩子 · 远程 HTTP POST）
 > **面向对象**：钉钉机器人、飞书机器人、企业微信机器人、团队自建 Webhook 网关
 
@@ -16,7 +16,7 @@
 
 ---
 
-## 2. 推荐配置配方 (`vite.config.ts`)
+## 2. 推荐配置方案 (`vite.config.ts`)
 
 ```typescript
 // vite.config.ts

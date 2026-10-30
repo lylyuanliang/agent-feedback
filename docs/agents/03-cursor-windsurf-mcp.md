@@ -1,6 +1,6 @@
 # Cursor / Windsurf / VS Code (Cline) MCP 模式接入指南
 
-> **验证状态**：⏳ **待实测验证 (理论配方)** (Pending Verification)
+> **验证状态**：⏳ **待实测验证 (基准方案)** (Pending Verification)
 > **交互流派**：流派 2（标准化上下文主动拉取 · MCP 协议）
 > **协议标准**：Anthropic Model Context Protocol (MCP) Stdio
 
@@ -15,7 +15,7 @@
 
 ---
 
-## 2. 推荐配置配方
+## 2. 推荐配置方案
 
 ### 步骤 1：在 `vite.config.ts` 中开启 MCP 模式
 ```typescript
