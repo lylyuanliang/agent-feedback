@@ -6,6 +6,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { createRequire } from 'node:module';
 import { exec } from 'node:child_process';
 import { promisify } from 'node:util';
 import { sanitizeFeedbackContent } from '@lylyuanliang/agent-feedback-core';
@@ -679,9 +680,10 @@ export function detectAntigravityConversation(cwd: string = process.cwd()): stri
     const dbPath = path.join(home, '.gemini/antigravity/conversation_summaries.db');
     if (!fs.existsSync(dbPath)) return null;
 
-    // 动态探测原生 node:sqlite (Node 22.5+ 原生支持)
+    // 动态探测原生 node:sqlite (兼容 CJS 与 ESM 打包环境)
+    const req = typeof require !== 'undefined' ? require : createRequire(import.meta.url);
     // @ts-ignore
-    const { DatabaseSync } = require('node:sqlite');
+    const { DatabaseSync } = req('node:sqlite');
     if (!DatabaseSync) return null;
 
     const db = new DatabaseSync(dbPath, { readOnly: true });
@@ -814,32 +816,61 @@ export async function startSentinel(options: WatcherOptions = {}): Promise<void>
               webhookHandled = true;
               try {
                 const relStorageDir = path.relative(process.cwd(), storageDir).replace(/\\/g, '/') || storageDir;
-                await execAsync(options.webhookCommand, {
+                let executedCmd = options.webhookCommand;
+                const envMap: Record<string, string> = {
+                  FEEDBACK_COUNT: String(processedBatch.length),
+                  FEEDBACK_IDS: processedBatch.map(i => i.id).join(','),
+                  FEEDBACK_DIR: relStorageDir
+                };
+                // 抹平跨平台命令语法差异：在 Node 层直接将 $VAR, ${VAR}, %VAR% 展开替换
+                for (const [k, v] of Object.entries(envMap)) {
+                  executedCmd = executedCmd
+                    .replace(new RegExp(`\\$${k}\\b`, 'g'), v)
+                    .replace(new RegExp(`\\$\\{${k}\\}`, 'g'), v)
+                    .replace(new RegExp(`%${k}%`, 'g'), v);
+                }
+                await execAsync(executedCmd, {
                   env: {
                     ...process.env,
-                    FEEDBACK_COUNT: String(processedBatch.length),
-                    FEEDBACK_IDS: processedBatch.map(i => i.id).join(','),
-                    FEEDBACK_DIR: relStorageDir
+                    ...envMap
                   }
                 });
               } catch (cmdErr: any) {
-                warn(`[!] Webhook 命令执行异常: ${cmdErr?.message}`);
+                const rawError = (cmdErr?.stderr || cmdErr?.message || String(cmdErr)).trim();
+                warn(`[!] Webhook 命令执行异常: ${rawError}`);
+                // 开发者专属直出报错，不包装客套话
+                const errorReply = `[Agent 调度失败] ${rawError}`;
+                for (const item of processedBatch) {
+                  updateFeedbackStatus(storageDir, item.id, 'processing', errorReply);
+                }
               }
             }
             if (options.webhookUrl) {
               webhookHandled = true;
               try {
-                await fetch(options.webhookUrl, {
+                const res = await fetch(options.webhookUrl, {
                   method: 'POST',
                   headers: { 'Content-Type': 'application/json' },
                   body: JSON.stringify({ batch: processedBatch })
                 });
+                if (!res.ok) {
+                  throw new Error(`HTTP ${res.status} ${res.statusText}`);
+                }
               } catch (netErr: any) {
-                warn(`[!] Webhook 请求发送异常: ${netErr?.message}`);
+                const rawError = (netErr?.message || String(netErr)).trim();
+                warn(`[!] Webhook 请求发送异常: ${rawError}`);
+                const errorReply = `[Webhook 推送失败] ${rawError}`;
+                for (const item of processedBatch) {
+                  updateFeedbackStatus(storageDir, item.id, 'processing', errorReply);
+                }
               }
             }
             if (!webhookHandled && !options.onWakeup) {
-              log('[*] 💡 [Webhook 适配器提示] 批次已安全分诊并持久化。因未配置 webhookCommand 或 webhookUrl，未触发外部通知。');
+              const tipMsg = '因未配置 webhookCommand 或 webhookUrl，未触发外部通知。';
+              log(`[*] 💡 [Webhook 适配器提示] 批次已安全分诊并持久化。${tipMsg}`);
+              for (const item of processedBatch) {
+                updateFeedbackStatus(storageDir, item.id, 'processing', `[调度未触发] ${tipMsg}`);
+              }
             }
           }
 
@@ -863,10 +894,18 @@ export async function startSentinel(options: WatcherOptions = {}): Promise<void>
                 await execAsync(`${agentApiBin} send-message ${activeConvId} "${safeMsg}"`);
                 log(`[*] 🚀 已通过 agentapi 向 Antigravity 会话 [${activeConvId}] 发送主动唤醒消息！`);
               } catch (apiErr: any) {
-                warn(`[!] agentapi 唤醒调用异常: ${apiErr?.message}`);
+                const rawError = (apiErr?.message || String(apiErr)).trim();
+                warn(`[!] agentapi 唤醒调用异常: ${rawError}`);
+                for (const item of processedBatch) {
+                  updateFeedbackStatus(storageDir, item.id, 'processing', `[agentapi 唤醒失败] ${rawError}`);
+                }
               }
             } else {
-              warn('[!] 未能识别到活跃的 Antigravity 会话 ID，跳过 agentapi 发送。');
+              const tipMsg = '未能识别到活跃的 Antigravity 会话 ID，跳过 agentapi 发送。';
+              warn(`[!] ${tipMsg}`);
+              for (const item of processedBatch) {
+                updateFeedbackStatus(storageDir, item.id, 'processing', `[Antigravity 路由失败] ${tipMsg}`);
+              }
             }
 
             const shouldExit =
