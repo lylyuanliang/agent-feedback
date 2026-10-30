@@ -141,6 +141,11 @@ if (import.meta.env.DEV) {
 
 > 💡 **智能体接入生态指南**：想要深入了解各 Agent 的能力准入矩阵、会话路由细节与自动化流水线？请参阅完整生态手册：[**《智能体生态接入与多 Agent 闭环指南》**](docs/multi-agent-integration-guide.md)。
 
+> [!IMPORTANT]
+> **⚠️ 核心对应关系说明：`storageDir` 与命令 Prompt 中的工单检索路径**
+> 1. **为什么必须一致**：被唤醒的命令行 Agent（如 Claude / DSH）完全根据 Prompt 引号内的指引去读取工单数据。若在配置中指定了 `storageDir: 'scratch/feedback'`，Prompt 中就必须指示 Agent 前往 `scratch/feedback` 检索。若两处路径不一致，Agent 将因“找不到工单文件”而无法定位！
+> 2. **推荐使用内置环境变量**：哨兵在触发 `webhookCommand` 时，已自动向子进程注入环境变量 `$FEEDBACK_DIR`（当前存储目录相对路径）、`$FEEDBACK_IDS`（工单 ID）与 `$FEEDBACK_COUNT`（工单数量）。直接在 Prompt 中使用 `$FEEDBACK_DIR`，无论后续如何更改 `storageDir`，命令均可自适应生效！
+
 `agent-feedback` 是一套**与特定智能体完全解耦的开放网桥**。无论你使用的是哪种 Agent，都能按图索骥、1 行配置跑通闭环：
 
 ### 🟢 配方 A：Google Antigravity（0 配置原生伴生 · 推荐）
@@ -183,8 +188,9 @@ export default defineConfig({
         autoStart: true,
         debounceSeconds: 10,
         adapter: 'webhook',
-        // 自动注入环境变量 $FEEDBACK_IDS 与 $FEEDBACK_COUNT
-        webhookCommand: 'claude -p "端侧上报了最新移动端工单(ID: $FEEDBACK_IDS)，请检视 .agent/feedback 目录定位源码并修复，完成后调用 npx agent-feedback update-status 回写"'
+        // 自动注入环境变量 $FEEDBACK_DIR, $FEEDBACK_IDS 与 $FEEDBACK_COUNT
+        // 检索目录与上方 storageDir 保持一致（也可直接使用 $FEEDBACK_DIR 环境变量自适应）
+        webhookCommand: 'claude -p "端侧上报了最新移动端工单(ID: $FEEDBACK_IDS)，请检视 scratch/feedback 目录定位源码并修复，完成后调用 npx agent-feedback update-status 回写"'
       }
     })
   ]
@@ -209,7 +215,7 @@ export default defineConfig({
         autoStart: true,
         debounceSeconds: 10,
         adapter: 'webhook',
-        // 通过 DSH 自动化执行缺陷修复并回写状态
+        // 通过 DSH 自动化执行缺陷修复（检索路径与 storageDir 保持一致，亦可直接使用 $FEEDBACK_DIR）
         webhookCommand: 'dsh --auto-confirm -q "检测到手机端新工单(ID: $FEEDBACK_IDS)，请读取 scratch/feedback 目录排查并修复源码，通过单测后调用 npx agent-feedback update-status 回写结果"'
       }
     })

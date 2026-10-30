@@ -57,6 +57,15 @@ flowchart TD
 
 ## 3. 各主流智能体 vite.config.ts 完整配置配方库
 
+> [!IMPORTANT]
+> **⚠️ 核心对应关系：`storageDir` 与命令 Prompt 中的检索路径**
+> 1. **强关联逻辑**：命令行 Agent 属于独立的外部进程，它完全依赖 Prompt 引号内的指令寻找工单数据。如果你在配置中指定了 `storageDir: 'scratch/feedback'`，Prompt 中就必须指引 Agent 读取 `scratch/feedback`；若写成了其他路径，Agent 检索对应目录将扑空。
+> 2. **内置环境变量注入**：哨兵在调用 `webhookCommand` 时会自动向子进程注入以下环境变量：
+>    - `$FEEDBACK_DIR`：当前配置的工单存储目录相对路径（如 `scratch/feedback` 或 `.agent/feedback`）；
+>    - `$FEEDBACK_IDS`：本次捕获聚合的工单 ID 列表（逗号分隔）；
+>    - `$FEEDBACK_COUNT`：本次批次包含的工单总数。
+>    因此，你既可以直接书写匹配的目录路径，也可以直接在 Prompt 中引用 `$FEEDBACK_DIR` 实现与配置项的动态解耦！
+
 ### 3.1 Google Antigravity 接入配方
 ```typescript
 // vite.config.ts
@@ -119,7 +128,7 @@ export default defineConfig({
         autoStart: true,
         debounceSeconds: 10,
         adapter: 'webhook',
-        // 通过 DSH 自动执行缺陷定位并回写状态
+        // 通过 DSH 自动执行缺陷定位并回写状态（检索路径与 storageDir 保持一致，亦可写 $FEEDBACK_DIR）
         webhookCommand: 'dsh --auto-confirm -q "检测到手机端新工单(ID: $FEEDBACK_IDS)，请读取 scratch/feedback 目录排查并修复源码，通过单测后调用 npx agent-feedback update-status 回写结果"'
       }
     })
