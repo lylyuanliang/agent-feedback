@@ -15,7 +15,9 @@ import {
   mcpTools,
   executeMcpTool,
   insertNotice,
-  getLocalDateString
+  getLocalDateString,
+  detectAntigravityConversation,
+  getAgentApiExecutable
 } from '../src/index.ts';
 import type { InAppFeedback } from '../src/index.ts';
 
@@ -556,5 +558,21 @@ describe('@agent-feedback/sentinel - CLI Entrypoint (bin/cli.js)', () => {
     assert.strictEqual(awakenedBatch.length, 1);
     assert.strictEqual(awakenedBatch[0].id, 9901);
     assert.strictEqual(awakenedBatch[0].status, 'processing');
+  });
+
+  it('should resolve conversation ID from environment or detectAntigravityConversation', () => {
+    const origEnv = process.env.ANTIGRAVITY_CONVERSATION_ID;
+    try {
+      process.env.ANTIGRAVITY_CONVERSATION_ID = 'test-conv-id-12345';
+      assert.strictEqual(detectAntigravityConversation(), 'test-conv-id-12345');
+    } finally {
+      if (origEnv !== undefined) {
+        process.env.ANTIGRAVITY_CONVERSATION_ID = origEnv;
+      } else {
+        delete process.env.ANTIGRAVITY_CONVERSATION_ID;
+      }
+    }
+    const exe = getAgentApiExecutable();
+    assert.ok(typeof exe === 'string' && exe.length > 0);
   });
 });

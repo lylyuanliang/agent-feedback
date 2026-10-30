@@ -1,6 +1,6 @@
 {
   "name": "@lylyuanliang/agent-feedback-core",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Core protocols, types, and state machine for Agent Feedback Bridge",
   "type": "module",
   "main": "dist/index.js",

@@ -1,6 +1,6 @@
 {
   "name": "@lylyuanliang/agent-feedback-sentinel",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Silent watcher CLI & pluggable AI Coding Agent wakeup adapters",
   "type": "module",
   "bin": {

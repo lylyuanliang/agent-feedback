@@ -238,20 +238,30 @@ export default defineConfig({
       storageDir: 'scratch/feedback', // 工单日级分片本地存储目录 (默认: .agent/feedback)
       theme: 'dark',                  // 主题模式: 'dark' | 'light' | 'auto' (默认: 'dark')
       primaryColor: '#4edea3',        // 自定义核心主色 (可选)
-      tunnel: false                   // 是否自动开启临时 HTTPS 穿透 (默认: false)
+      sentinel: {                     // 🌟 [v1.1.0 新特性] 哨兵生命周期自动托管 (同生共死 · 0 心智负担)
+        autoStart: true,              // 随 npm run dev 自动静默拉起守护，随服务终止自动销毁
+        debounceSeconds: 10           // 捕获首条反馈后 10 秒防抖收集窗口
+      }
     })
   ]
 })
 ```
 
-### 3. 启动开发服务与哨兵
+### 3. 启动开发服务与哨兵 (一键伴生自动拉起)
 
 ```bash
-# 终端 1：启动应用 (此时页面已自动出现磁吸悬浮胶囊)
+# 只需单个命令启动应用，哨兵将伴随 DevServer 自动静默拉起并在后台常驻守候！
 npm run dev
+```
 
-# 终端 2：启动 AI 哨兵守候 (当收到端侧反馈时自动防抖并唤醒 IDE 中的 Agent)
-npx agent-feedback watch --dir scratch/feedback
+控制台将输出如下伴生信息：
+```text
+[@agent-feedback/vite-plugin] 哨兵已伴随 DevServer 自动启动 (适配器: antigravity (会话: 66cdabf9...), 常驻守护)
+```
+
+*(可选) 如需在独立终端中手动运行常驻守护：*
+```bash
+npx agent-feedback watch --dir scratch/feedback --daemon
 ```
 
 ---

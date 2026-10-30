@@ -5,7 +5,7 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
-import { startSentinel } from '@lylyuanliang/agent-feedback-sentinel';
+import { startSentinel, detectAntigravityConversation } from '@lylyuanliang/agent-feedback-sentinel';
 import type { WatcherAdapter } from '@lylyuanliang/agent-feedback-sentinel';
 import type {
   InAppFeedback,
@@ -628,14 +628,15 @@ export function agentFeedback(options: AgentFeedbackPluginOptions = {}): AgentFe
 
       if (shouldAutoStartSentinel) {
         const sentinelCfg = typeof sentinelOpt === 'object' ? sentinelOpt : {};
-        const detectedAdapter = process.env.ANTIGRAVITY_CONVERSATION_ID ? 'antigravity' : 'webhook';
+        const autoConvId = sentinelCfg.conversationId || detectAntigravityConversation(projectRoot);
+        const detectedAdapter = autoConvId ? 'antigravity' : 'webhook';
         const adapter = sentinelCfg.adapter || detectedAdapter;
         sentinelAbortController = new AbortController();
 
         startSentinel({
           storageDir: feedbackDir,
           adapter,
-          conversationId: sentinelCfg.conversationId || process.env.ANTIGRAVITY_CONVERSATION_ID,
+          conversationId: autoConvId || undefined,
           webhookCommand: sentinelCfg.webhookCmd,
           webhookUrl: sentinelCfg.webhookUrl,
           debounceSeconds: sentinelCfg.debounceSeconds ?? 10,
@@ -653,7 +654,8 @@ export function agentFeedback(options: AgentFeedbackPluginOptions = {}): AgentFe
         });
 
         if (server?.config?.logger?.info) {
-          server.config.logger.info(`[@agent-feedback/vite-plugin] 哨兵已伴随 DevServer 自动启动 (适配器: ${adapter}, 常驻守护)`);
+          const convInfo = adapter === 'antigravity' && autoConvId ? ` (会话: ${autoConvId.slice(0, 8)}...)` : '';
+          server.config.logger.info(`[@agent-feedback/vite-plugin] 哨兵已伴随 DevServer 自动启动 (适配器: ${adapter}${convInfo}, 常驻守护)`);
         }
       }
 

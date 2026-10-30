@@ -4,6 +4,7 @@
  */
 
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { exec } from 'node:child_process';
 import { promisify } from 'node:util';
@@ -649,6 +650,67 @@ export async function startMcpServer(options: WatcherOptions = {}): Promise<void
 }
 
 /**
+ * 解析本机可用的 agentapi 可执行程序路径
+ */
+export function getAgentApiExecutable(): string {
+  const home = os.homedir();
+  const winBat = path.join(home, '.gemini/antigravity/bin/agentapi.bat');
+  if (process.platform === 'win32' && fs.existsSync(winBat)) {
+    return `"${winBat}"`;
+  }
+  const nixBin = path.join(home, '.gemini/antigravity/bin/agentapi');
+  if (fs.existsSync(nixBin)) {
+    return `"${nixBin}"`;
+  }
+  return 'agentapi';
+}
+
+/**
+ * 自动检测并推断当前项目工作区对应的活跃 Antigravity 会话 ID
+ * 1. 优先读取系统环境变量 ANTIGRAVITY_CONVERSATION_ID (智能体内部子进程环境)
+ * 2. 外部终端自适应：读取 ~/.gemini/antigravity/conversation_summaries.db (通过 Node 原生 node:sqlite 零依赖检索)
+ */
+export function detectAntigravityConversation(cwd: string = process.cwd()): string | null {
+  if (process.env.ANTIGRAVITY_CONVERSATION_ID) {
+    return process.env.ANTIGRAVITY_CONVERSATION_ID;
+  }
+  try {
+    const home = os.homedir();
+    const dbPath = path.join(home, '.gemini/antigravity/conversation_summaries.db');
+    if (!fs.existsSync(dbPath)) return null;
+
+    // 动态探测原生 node:sqlite (Node 22.5+ 原生支持)
+    // @ts-ignore
+    const { DatabaseSync } = require('node:sqlite');
+    if (!DatabaseSync) return null;
+
+    const db = new DatabaseSync(dbPath, { readOnly: true });
+    const normCwd = path.resolve(cwd).replace(/\\/g, '/').toLowerCase();
+    const stmt = db.prepare(`
+      SELECT conversation_id, workspace_uris, last_modified_time
+      FROM conversation_summaries
+      WHERE killed = 0
+      ORDER BY last_modified_time DESC
+      LIMIT 20
+    `);
+    const rows = stmt.all() as Array<{ conversation_id: string; workspace_uris: string }>;
+    db.close();
+
+    for (const row of rows) {
+      if (row.workspace_uris) {
+        const decodedUris = decodeURIComponent(row.workspace_uris).replace(/\\/g, '/').toLowerCase();
+        if (decodedUris.includes(normCwd)) {
+          return row.conversation_id;
+        }
+      }
+    }
+  } catch {
+    // 降级容错
+  }
+  return null;
+}
+
+/**
  * 静默哨兵核心监听器
  * 1. 适配按天分片存储目录及队列文件的静默轮询
  * 2. 捕获第 1 条新 pending 反馈后，自动开启防抖聚合窗口 (默认 10s，支持毫秒配置)
@@ -662,7 +724,11 @@ export async function startSentinel(options: WatcherOptions = {}): Promise<void>
   const queueFile = options.queueFile || path.resolve(storageDir, 'feedback_queue.json');
   const lastProcessedFile =
     options.lastProcessedFile || path.resolve(storageDir, 'last_processed_id.txt');
-  const adapter = options.adapter || 'antigravity';
+
+  const detectedConvId = options.conversationId || detectAntigravityConversation(storageDir || process.cwd());
+  const adapter = options.adapter || (detectedConvId ? 'antigravity' : 'webhook');
+  const convId = detectedConvId;
+
   const isOnce = options.once !== false;
   const log = options.silent
     ? () => {}
@@ -677,7 +743,8 @@ export async function startSentinel(options: WatcherOptions = {}): Promise<void>
   }
 
   let lastProcessedId = getLastProcessedId(lastProcessedFile);
-  log(`[*] Agent Feedback 哨兵已启动 (适配器: ${adapter})...`);
+  const convInfo = adapter === 'antigravity' && convId ? ` (会话: ${convId.slice(0, 8)}...)` : '';
+  log(`[*] Agent Feedback 哨兵已启动 (适配器: ${adapter}${convInfo})...`);
   log(`[*] 静默守候中 (0% CPU, 0 Token，捕获反馈后将启动 ${debounceMs / 1000}s 防抖聚合)...`);
 
   const stepInterval = Math.min(1500, Math.max(10, Math.floor(debounceMs / 5)));
@@ -742,7 +809,9 @@ export async function startSentinel(options: WatcherOptions = {}): Promise<void>
 
           // 适配器调度分发
           if (adapter === 'webhook') {
+            let webhookHandled = false;
             if (options.webhookCommand) {
+              webhookHandled = true;
               try {
                 await execAsync(options.webhookCommand, {
                   env: {
@@ -756,6 +825,7 @@ export async function startSentinel(options: WatcherOptions = {}): Promise<void>
               }
             }
             if (options.webhookUrl) {
+              webhookHandled = true;
               try {
                 await fetch(options.webhookUrl, {
                   method: 'POST',
@@ -766,6 +836,9 @@ export async function startSentinel(options: WatcherOptions = {}): Promise<void>
                 warn(`[!] Webhook 请求发送异常: ${netErr?.message}`);
               }
             }
+            if (!webhookHandled && !options.onWakeup) {
+              log('[*] 💡 [Webhook 适配器提示] 批次已安全分诊并持久化。因未配置 webhookCommand 或 webhookUrl，未触发外部通知。');
+            }
           }
 
           if (typeof options.onWakeup === 'function') {
@@ -774,8 +847,8 @@ export async function startSentinel(options: WatcherOptions = {}): Promise<void>
 
           if (adapter === 'antigravity') {
             log('[*] 🔔 触发 Antigravity 响应式唤醒机制...');
-            const convId = options.conversationId || process.env.ANTIGRAVITY_CONVERSATION_ID;
-            if (convId) {
+            const activeConvId = convId || options.conversationId || process.env.ANTIGRAVITY_CONVERSATION_ID || detectAntigravityConversation(storageDir || process.cwd());
+            if (activeConvId) {
               const summaryLines = processedBatch
                 .slice(0, 3)
                 .map(i => `[#${i.id}] ${i.content}`)
@@ -784,11 +857,14 @@ export async function startSentinel(options: WatcherOptions = {}): Promise<void>
               const wakeMsg = `📥 [Agent Feedback 自动唤醒] 捕获到端侧真实新反馈 (共 ${processedBatch.length} 条)：${summaryLines}${moreText}。请立即进入排查与自愈修复流程。`;
               try {
                 const safeMsg = wakeMsg.replace(/"/g, '\\"').replace(/[\r\n]+/g, ' ');
-                await execAsync(`agentapi send-message ${convId} "${safeMsg}"`);
-                log(`[*] 🚀 已通过 agentapi 向 Antigravity 会话 [${convId}] 发送主动唤醒消息！`);
+                const agentApiBin = getAgentApiExecutable();
+                await execAsync(`${agentApiBin} send-message ${activeConvId} "${safeMsg}"`);
+                log(`[*] 🚀 已通过 agentapi 向 Antigravity 会话 [${activeConvId}] 发送主动唤醒消息！`);
               } catch (apiErr: any) {
                 warn(`[!] agentapi 唤醒调用异常: ${apiErr?.message}`);
               }
+            } else {
+              warn('[!] 未能识别到活跃的 Antigravity 会话 ID，跳过 agentapi 发送。');
             }
 
             const shouldExit =
