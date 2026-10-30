@@ -50,7 +50,7 @@
 
 4. 🔌 **开放扩展槽架构 (Extension Tabs Workbench) 与 生产零残留 (Zero-DCE)**
    - **单一胶囊，无限扩展**：手机屏幕上仅需一个优雅悬浮胶囊，宿主应用通过 `registerExtensionTab` 规范即可无缝挂载专属业务能力（例如：内网穿透通信诊断、APK 流式断点续传在线更新、切屏保活等）；
-   - **100% 生产零残留 (Zero-DCE)**：生产构建（`vite build`）全量物理剥离，构建产物增加 0 字节，0 调试接口泄露，完全不影响生产性能与安全。
+   - **100% 生产零残留 (Zero-DCE)**：生产构建（`vite build`）全量物理剥离，构建产物增加 0 字节，0 调试接口泄露，完全不影响生产性能与安全。（想要深入了解自动剥离机制或为移动端定制真机 Debug 包？请参阅 ➔ [**《生产 100% 自动剥离与真机 Debug 变体原理指南》**](docs/production-zero-dce-and-debug-builds.md)）。
 
 ---
 
@@ -131,6 +131,7 @@ if (import.meta.env.DEV) {
   initAgentFeedback({ appName: '我的业务App' });
 }
 ```
+*(注：如果需要为移动端混合应用定制带有悬浮气泡的真机离线测试包，请参阅 ➔ [**《真机 Debug 变体与 Zero-DCE 原理》**](docs/production-zero-dce-and-debug-builds.md))*
 
 ### 步骤 3：在 `vite.config.ts` 启用插件与哨兵
 根据你团队当前使用的 Agent 类型，直接复制下一节对应的**开箱即用配方**！
