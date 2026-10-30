@@ -813,11 +813,13 @@ export async function startSentinel(options: WatcherOptions = {}): Promise<void>
             if (options.webhookCommand) {
               webhookHandled = true;
               try {
+                const relStorageDir = path.relative(process.cwd(), storageDir).replace(/\\/g, '/') || storageDir;
                 await execAsync(options.webhookCommand, {
                   env: {
                     ...process.env,
                     FEEDBACK_COUNT: String(processedBatch.length),
-                    FEEDBACK_IDS: processedBatch.map(i => i.id).join(',')
+                    FEEDBACK_IDS: processedBatch.map(i => i.id).join(','),
+                    FEEDBACK_DIR: relStorageDir
                   }
                 });
               } catch (cmdErr: any) {

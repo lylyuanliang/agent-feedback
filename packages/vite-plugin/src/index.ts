@@ -191,6 +191,11 @@ export interface SentinelPluginOptions {
   webhookCmd?: string;
 
   /**
+   * Webhook 适配器触发的外部 Shell 命令别名 (同 webhookCmd)
+   */
+  webhookCommand?: string;
+
+  /**
    * Webhook 适配器触发的 HTTP POST 端点
    */
   webhookUrl?: string;
@@ -637,7 +642,7 @@ export function agentFeedback(options: AgentFeedbackPluginOptions = {}): AgentFe
           storageDir: feedbackDir,
           adapter,
           conversationId: autoConvId || undefined,
-          webhookCommand: sentinelCfg.webhookCmd,
+          webhookCommand: sentinelCfg.webhookCommand || sentinelCfg.webhookCmd,
           webhookUrl: sentinelCfg.webhookUrl,
           debounceSeconds: sentinelCfg.debounceSeconds ?? 10,
           debounceMs: sentinelCfg.debounceMs,
