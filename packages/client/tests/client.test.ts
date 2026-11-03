@@ -163,6 +163,8 @@ const {
   captureScreenshot,
   formatLocalTime,
   formatLocalDate,
+  uploadMediaInChunks,
+  isVideoMedia,
   AgentFeedbackWidget,
   registerAgentFeedbackWidget,
   autoMountWidget,
@@ -642,5 +644,110 @@ describe('@agent-feedback/client <agent-feedback-widget> Web Component', () => {
     assert.ok(html.includes('af-tab-panel-submit'), 'Submit panel should exist in DOM');
     assert.ok(html.includes('af-tab-panel-history'), 'History panel should exist in DOM');
     assert.ok(html.includes('display: block'), 'Active panel should be visible');
+  });
+
+  it('should upload media in chunks via uploadMediaInChunks', async () => {
+    const uploadedChunks: any[] = [];
+    (globalThis as any).fetch = async (url: string, init?: any) => {
+      uploadedChunks.push({
+        url,
+        headers: init.headers,
+        body: init.body
+      });
+      const isLast = init.headers['X-Chunk-Index'] === '1';
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          success: true,
+          completed: isLast,
+          filename: 'record_test.mp4',
+          url: 'media/record_test.mp4',
+          type: 'video',
+          size: 1500
+        })
+      };
+    };
+
+    // 构造一个 1.5MB 的模拟文件切片测试
+    const fakeBuffer = Buffer.alloc(1.5 * 1024 * 1024);
+    const fakeFile = {
+      size: fakeBuffer.length,
+      slice: (start: number, end: number) => fakeBuffer.subarray(start, end)
+    };
+
+    const progressCalls: number[] = [];
+    const media = await uploadMediaInChunks(fakeFile as any, 'record_test.mp4', 'http://127.0.0.1:5173', (p: number) => {
+      progressCalls.push(p);
+    });
+
+    assert.strictEqual(uploadedChunks.length, 2, '1.5MB 应切为 2 个分块');
+    assert.strictEqual(uploadedChunks[0].headers['X-Chunk-Index'], '0');
+    assert.strictEqual(uploadedChunks[1].headers['X-Chunk-Index'], '1');
+    assert.strictEqual(media.type, 'video');
+    assert.strictEqual(media.url, 'media/record_test.mp4');
+    assert.ok(progressCalls.length >= 2, 'Progress callbacks should be triggered');
+  });
+
+  it('should render inline <video> player in ticket history when feedback contains video media', async () => {
+    (globalThis as any).fetch = async (url: string) => {
+      if (url.includes('/api/__agent_feedback/list')) {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => [
+            {
+              id: 7001,
+              content: '手势异常',
+              status: 'completed',
+              reply: '已解决',
+              media: [
+                {
+                  type: 'video',
+                  url: 'media/touch_lag.mp4',
+                  filename: 'touch_lag.mp4'
+                }
+              ]
+            }
+          ]
+        };
+      }
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({ dates: ['2026-11-03'], totalCount: 1 })
+      };
+    };
+
+    const widget = new AgentFeedbackWidget();
+    widget.connectedCallback();
+    widget.toggleModal(true);
+    widget.setTab('history');
+
+    await widget.loadHistory();
+
+    const html = widget.shadow.innerHTML;
+    assert.ok(html.includes('ticket-videos-container'), 'Should contain video container');
+    assert.ok(html.includes('<video'), 'Should render <video> tag');
+    assert.ok(html.includes('ticket-video-player'), 'Should have ticket-video-player class');
+    assert.ok(html.includes('media/touch_lag.mp4'), 'Should load correct video src');
+    assert.ok(html.includes('btn-video-lightbox'), 'Should have full-screen button');
+  });
+
+  it('should render full-screen <video> in lightbox when previewing video media', () => {
+    const widget = new AgentFeedbackWidget();
+    widget.connectedCallback();
+    widget.toggleModal(true);
+
+    // 模拟打开视频 Lightbox
+    (widget as any).lightboxSrc = 'http://localhost:5173/api/__agent_feedback/media/sample_video.mp4';
+    (widget as any).lightboxTitle = '真机录屏播放';
+    (widget as any).render();
+
+    const html = widget.shadow.innerHTML;
+    assert.ok(html.includes('af-lightbox'), 'Should open lightbox');
+    assert.ok(html.includes('af-lightbox-video'), 'Should render af-lightbox-video tag');
+    assert.ok(html.includes('<video'), 'Should be <video> tag');
+    assert.ok(!html.includes('<img src='), 'Should NOT render <img> for video');
   });
 });

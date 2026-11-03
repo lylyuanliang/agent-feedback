@@ -3,19 +3,25 @@
  * In-App Agent Feedback Bridge - Shadow DOM Web Component & Telemetry Client
  */
 
-import type {
-  InAppFeedback,
-  ConsoleLogEntry,
-  TelemetrySnapshot,
-  PlatformType,
-  FeedbackStatus,
-  FeedbackTheme,
-  FeedbackExtensionTab,
-  ExtensionContext
+import {
+  isVideoMedia,
+  type InAppFeedback,
+  type FeedbackMediaItem,
+  type FeedbackMediaType,
+  type ConsoleLogEntry,
+  type TelemetrySnapshot,
+  type PlatformType,
+  type FeedbackStatus,
+  type FeedbackTheme,
+  type FeedbackExtensionTab,
+  type ExtensionContext
 } from '@lylyuanliang/agent-feedback-core';
 
+export { isVideoMedia };
 export type {
   InAppFeedback,
+  FeedbackMediaItem,
+  FeedbackMediaType,
   ConsoleLogEntry,
   TelemetrySnapshot,
   PlatformType,
@@ -364,6 +370,62 @@ export async function compressImage(file: File | Blob, maxDim = 1200, quality = 
 }
 
 /**
+ * 客户端独立分块媒体流式上传引擎 (针对视频与大文件，避免内存与 JSON Base64 膨胀)
+ */
+export async function uploadMediaInChunks(
+  file: File | Blob,
+  fileName: string,
+  apiBase: string = '',
+  onProgress?: (percent: number) => void
+): Promise<FeedbackMediaItem> {
+  const chunkSize = 1024 * 1024; // 1MB 物理分块
+  const totalChunks = Math.ceil(file.size / chunkSize) || 1;
+  const uploadId = `vid_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+  let uploadedBytes = 0;
+
+  for (let i = 0; i < totalChunks; i++) {
+    const start = i * chunkSize;
+    const end = Math.min(file.size, start + chunkSize);
+    const chunkBlob = file.slice(start, end);
+
+    const cleanBase = apiBase ? apiBase.replace(/\/+$/, '') : '';
+    const chunkUrl = `${cleanBase}/api/__agent_feedback/media/chunk`;
+
+    const res = await fetch(chunkUrl, {
+      method: 'POST',
+      headers: {
+        'X-Upload-Id': uploadId,
+        'X-Chunk-Index': String(i),
+        'X-Total-Chunks': String(totalChunks),
+        'X-File-Name': encodeURIComponent(fileName),
+        'Content-Type': 'application/octet-stream'
+      },
+      body: chunkBlob
+    });
+
+    if (!res.ok) {
+      throw new Error(`分块 ${i + 1}/${totalChunks} 上传失败 (HTTP ${res.status})`);
+    }
+
+    uploadedBytes += chunkBlob.size;
+    const percent = Math.min(100, Math.round((uploadedBytes / file.size) * 100));
+    onProgress?.(percent);
+
+    const result = await res.json();
+    if (result.completed) {
+      return {
+        type: result.type || (isVideoMedia(fileName) ? 'video' : 'image'),
+        url: result.url,
+        filename: result.filename || fileName,
+        size: result.size || file.size
+      };
+    }
+  }
+
+  throw new Error('分块上传已完成，但服务端未返回完成确认');
+}
+
+/**
  * 高保真端侧截图辅助函数 (优先使用宿主环境的 html2canvas)
  */
 export async function captureScreenshot(): Promise<string | null> {
@@ -491,6 +553,7 @@ export class AgentFeedbackWidget extends CustomElementBase {
   // 表单状态
   private feedbackContent = '';
   private attachedScreenshots: string[] = [];
+  private attachedMedia: Array<FeedbackMediaItem & { isUploading?: boolean; uploadProgress?: number }> = [];
   private isSubmitting = false;
   private submitFeedbackMessage: { type: 'success' | 'error'; text: string } | null = null;
 
@@ -554,15 +617,35 @@ export class AgentFeedbackWidget extends CustomElementBase {
    * 规范化截图完整访问 URL (兼容日级分片、旧版路径及 cpolar 穿透基地址)
    */
   public getScreenshotUrl(shot: any): string {
-    const shotPath = typeof shot === 'string' ? shot : shot?.path || shot?.filename || '';
+    const shotPath = typeof shot === 'string' ? shot : shot?.path || shot?.filename || shot?.url || '';
     if (!shotPath) return '';
     if (shotPath.startsWith('data:') || shotPath.startsWith('http://') || shotPath.startsWith('https://')) {
       return shotPath;
+    }
+    // 兼容 media/ 目录路径
+    if (shotPath.startsWith('media/') || shotPath.startsWith('/media/')) {
+      const cleanMedia = shotPath.replace(/^[\/\\]*media[\/\\]+/i, '');
+      return this.getApiUrl(`/api/__agent_feedback/media/${cleanMedia}`);
     }
     const clean = shotPath
       .replace(/^[\/\\]*(api[\/\\](__agent_feedback|feedback)[\/\\])?(screenshots?[\/\\])?/i, '')
       .replace(/^[\\\/]+/, '');
     return this.getApiUrl(`/api/__agent_feedback/screenshots/${clean}`);
+  }
+
+  /**
+   * 规范化媒体完整访问 URL (针对视频与大图附件)
+   */
+  public getMediaUrl(mediaItemOrUrl: any): string {
+    const rawUrl = typeof mediaItemOrUrl === 'string' ? mediaItemOrUrl : mediaItemOrUrl?.url || mediaItemOrUrl?.path || '';
+    if (!rawUrl) return '';
+    if (rawUrl.startsWith('data:') || rawUrl.startsWith('http://') || rawUrl.startsWith('https://')) {
+      return rawUrl;
+    }
+    const clean = rawUrl
+      .replace(/^[\/\\]*(api[\/\\](__agent_feedback|feedback)[\/\\])?(media[\/\\])?/i, '')
+      .replace(/^[\\\/]+/, '');
+    return this.getApiUrl(`/api/__agent_feedback/media/${clean}`);
   }
 
   connectedCallback() {
@@ -1015,6 +1098,19 @@ export class AgentFeedbackWidget extends CustomElementBase {
     try {
       const telemetry = collectTelemetry();
       const consoleLogs = getRecentLogs();
+      // 聚合结构化 media
+      const cleanMedia: FeedbackMediaItem[] = this.attachedMedia
+        .filter(m => !m.isUploading && m.url)
+        .map(({ isUploading, uploadProgress, ...m }) => m);
+
+      // 合并到 screenshots 保持全量向下兼容
+      const allScreenshots = [...this.attachedScreenshots];
+      cleanMedia.forEach(m => {
+        if (!allScreenshots.includes(m.url)) {
+          allScreenshots.push(m.url);
+        }
+      });
+
       const payload: Partial<InAppFeedback> = {
         id: Date.now(),
         type: 'user_feedback',
@@ -1024,7 +1120,8 @@ export class AgentFeedbackWidget extends CustomElementBase {
         status: 'pending',
         telemetry,
         consoleLogs,
-        ...(this.attachedScreenshots.length > 0 ? { screenshots: this.attachedScreenshots } : {})
+        ...(allScreenshots.length > 0 ? { screenshots: allScreenshots } : {}),
+        ...(cleanMedia.length > 0 ? { media: cleanMedia } : {})
       };
 
       const res = await fetch(this.getApiUrl('/api/__agent_feedback/submit'), {
@@ -1046,6 +1143,7 @@ export class AgentFeedbackWidget extends CustomElementBase {
 
       this.feedbackContent = '';
       this.attachedScreenshots = [];
+      this.attachedMedia = [];
       this.submitFeedbackMessage = {
         type: 'success',
         text: '反馈已递交！AI Agent 哨兵将在 10 秒防抖后自动唤醒分析修复。'
@@ -1358,24 +1456,81 @@ export class AgentFeedbackWidget extends CustomElementBase {
       });
     });
 
+    const removeMediaBtns = this.shadow.querySelectorAll?.('.btn-remove-media');
+    removeMediaBtns?.forEach((btn: any) => {
+      btn.addEventListener?.('click', (e: Event) => {
+        e.stopPropagation();
+        const idxStr = btn.getAttribute?.('data-index');
+        const idx = parseInt(idxStr || '0', 10);
+        if (!isNaN(idx) && idx >= 0 && idx < this.attachedMedia.length) {
+          this.attachedMedia.splice(idx, 1);
+          this.render();
+          this.bindEvents();
+        }
+      });
+    });
+
     const fileInput = this.shadow.querySelector?.('.screenshot-file-input') as HTMLInputElement;
     if (fileInput) {
       fileInput.addEventListener?.('change', async () => {
         const files = Array.from(fileInput.files || []);
         if (files.length === 0) return;
 
-        const remaining = Math.max(0, 6 - this.attachedScreenshots.length);
+        const remaining = Math.max(0, 6 - (this.attachedScreenshots.length + this.attachedMedia.length));
         const filesToRead = files.slice(0, remaining);
 
         for (const file of filesToRead) {
-          try {
-            // 使用客户端轻量 Canvas 压缩引擎，将 10MB 手机原图秒级压缩为 ~80KB JPEG
-            const compressed = await compressImage(file, 1200, 0.75);
-            if (compressed) {
-              this.attachedScreenshots.push(compressed);
+          const isVideo = file.type.startsWith('video/') || isVideoMedia(file.name);
+          if (isVideo) {
+            // 视频文件：大小限制 50MB
+            if (file.size > 50 * 1024 * 1024) {
+              alert('单个录屏视频请勿超过 50MB');
+              continue;
             }
-          } catch (err) {
-            console.error('[agent-feedback] Failed to compress screenshot file:', err);
+
+            // 增加占位媒体项
+            const mediaPlaceholder: FeedbackMediaItem & { isUploading?: boolean; uploadProgress?: number } = {
+              type: 'video',
+              url: '',
+              filename: file.name,
+              size: file.size,
+              isUploading: true,
+              uploadProgress: 0
+            };
+            this.attachedMedia.push(mediaPlaceholder);
+            this.render();
+            this.bindEvents();
+
+            try {
+              const uploaded = await uploadMediaInChunks(file, file.name, this.apiBase, (percent) => {
+                mediaPlaceholder.uploadProgress = percent;
+                const progressEl = this.shadow.querySelector?.(`.media-upload-tag[data-filename="${file.name}"]`);
+                if (progressEl) {
+                  progressEl.textContent = `上传中 ${percent}%`;
+                }
+              });
+              mediaPlaceholder.url = uploaded.url;
+              mediaPlaceholder.filename = uploaded.filename;
+              mediaPlaceholder.isUploading = false;
+              mediaPlaceholder.uploadProgress = 100;
+            } catch (err: any) {
+              console.error('[agent-feedback] Video chunk upload failed:', err);
+              const idx = this.attachedMedia.indexOf(mediaPlaceholder);
+              if (idx >= 0) this.attachedMedia.splice(idx, 1);
+              alert(`视频上传失败: ${err?.message || '网络连接中断'}`);
+            }
+            this.render();
+            this.bindEvents();
+          } else {
+            // 图片文件：走 Canvas 压缩引擎
+            try {
+              const compressed = await compressImage(file, 1200, 0.75);
+              if (compressed) {
+                this.attachedScreenshots.push(compressed);
+              }
+            } catch (err) {
+              console.error('[agent-feedback] Failed to compress screenshot file:', err);
+            }
           }
         }
 
@@ -1384,7 +1539,7 @@ export class AgentFeedbackWidget extends CustomElementBase {
       });
     }
 
-    // 7. 截图点击放大预览 (Lightbox - 支持历史工单截图与新建反馈上传的本地/抓取截图)
+    // 7. 截图与视频点击放大预览 (Lightbox - 支持历史工单与新建反馈)
     const allThumbs = this.shadow.querySelectorAll?.('.ticket-screenshot-thumb, .screenshot-img');
     allThumbs?.forEach((thumb: any) => {
       thumb.addEventListener?.('click', (e: Event) => {
@@ -1394,6 +1549,20 @@ export class AgentFeedbackWidget extends CustomElementBase {
         if (src) {
           this.lightboxSrc = src;
           this.lightboxTitle = title;
+          this.render();
+          this.bindEvents();
+        }
+      });
+    });
+
+    const videoLightboxBtns = this.shadow.querySelectorAll?.('.btn-video-lightbox');
+    videoLightboxBtns?.forEach((btn: any) => {
+      btn.addEventListener?.('click', (e: Event) => {
+        e.stopPropagation();
+        const videoSrc = btn.getAttribute?.('data-video-src');
+        if (videoSrc) {
+          this.lightboxSrc = videoSrc;
+          this.lightboxTitle = '真机录屏播放';
           this.render();
           this.bindEvents();
         }
@@ -1482,22 +1651,78 @@ export class AgentFeedbackWidget extends CustomElementBase {
           }
         </div>
         <div class="card-content">${item.content}</div>
-        ${
-          Array.isArray(item.screenshots) && item.screenshots.length > 0
-            ? `
-          <div class="ticket-screenshots">
-            ${item.screenshots
-              .map((shot: any, sIdx: number) => {
-                const shotUrl = this.getScreenshotUrl(shot);
-                if (!shotUrl) return '';
-                const safeTitle = (item.content || '截图').replace(/"/g, '&quot;');
-                return `<img src="${shotUrl}" data-full="${shotUrl}" data-title="${safeTitle}" class="ticket-screenshot-thumb" alt="截图凭证 ${sIdx + 1}" loading="lazy" title="点击查看大图" />`;
-              })
-              .join('')}
-          </div>
-        `
-            : ''
-        }
+        ${(() => {
+          const allMediaUrls: Array<{ type: 'video' | 'image'; url: string; title: string }> = [];
+          if (Array.isArray(item.media)) {
+            item.media.forEach((m) => {
+              const fullUrl = this.getMediaUrl(m.url || m);
+              if (fullUrl) {
+                allMediaUrls.push({
+                  type: m.type || (isVideoMedia(fullUrl) ? 'video' : 'image'),
+                  url: fullUrl,
+                  title: m.filename || item.content || '媒体'
+                });
+              }
+            });
+          }
+          if (Array.isArray(item.screenshots)) {
+            item.screenshots.forEach((s) => {
+              const fullUrl = this.getScreenshotUrl(s);
+              if (fullUrl && !allMediaUrls.some((m) => m.url === fullUrl)) {
+                allMediaUrls.push({
+                  type: isVideoMedia(fullUrl) ? 'video' : 'image',
+                  url: fullUrl,
+                  title: item.content || '截图'
+                });
+              }
+            });
+          }
+
+          const videoItems = allMediaUrls.filter((m) => m.type === 'video');
+          const imageItems = allMediaUrls.filter((m) => m.type === 'image');
+
+          let mediaHtml = '';
+          if (videoItems.length > 0) {
+            mediaHtml += `
+              <div class="ticket-videos-container">
+                ${videoItems
+                  .map(
+                    (v) => `
+                  <div class="ticket-video-card">
+                    <video
+                      class="ticket-video-player"
+                      src="${v.url}"
+                      controls
+                      playsinline
+                      preload="metadata"
+                    ></video>
+                    <div class="video-meta-bar">
+                      <span class="video-badge">🎬 录屏演示</span>
+                      <button class="btn-video-lightbox" data-video-src="${v.url}">全屏播放</button>
+                    </div>
+                  </div>
+                `
+                  )
+                  .join('')}
+              </div>
+            `;
+          }
+
+          if (imageItems.length > 0) {
+            mediaHtml += `
+              <div class="ticket-screenshots">
+                ${imageItems
+                  .map((img, sIdx) => {
+                    const safeTitle = img.title.replace(/"/g, '&quot;');
+                    return `<img src="${img.url}" data-full="${img.url}" data-title="${safeTitle}" class="ticket-screenshot-thumb" alt="截图凭证 ${sIdx + 1}" loading="lazy" title="点击查看大图" />`;
+                  })
+                  .join('')}
+              </div>
+            `;
+          }
+
+          return mediaHtml;
+        })()}
         ${
           item.reply
             ? `
@@ -2227,6 +2452,132 @@ export class AgentFeedbackWidget extends CustomElementBase {
           cursor: default;
         }
 
+        .af-lightbox-video {
+          max-width: 95vw;
+          max-height: 85vh;
+          border-radius: 8px;
+          outline: none;
+          box-shadow: 0 10px 40px rgba(0, 0, 0, 0.8);
+          background: #000;
+        }
+
+        .ticket-videos-container {
+          display: flex;
+          flex-direction: column;
+          gap: 8px;
+          margin-top: 8px;
+          margin-bottom: 6px;
+        }
+
+        .ticket-video-card {
+          width: 100%;
+          border-radius: 8px;
+          background: rgba(0, 0, 0, 0.5);
+          border: 1px solid var(--af-border, rgba(255, 255, 255, 0.15));
+          overflow: hidden;
+        }
+
+        .ticket-video-player {
+          width: 100%;
+          max-height: 220px;
+          display: block;
+          background: #000;
+          outline: none;
+        }
+
+        .video-meta-bar {
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          padding: 6px 10px;
+          background: rgba(18, 21, 28, 0.9);
+          border-top: 1px solid rgba(255, 255, 255, 0.08);
+          font-size: 11px;
+        }
+
+        .video-badge {
+          color: var(--af-primary, #4edea3);
+          font-weight: 600;
+          display: flex;
+          align-items: center;
+          gap: 4px;
+        }
+
+        .btn-video-lightbox {
+          background: rgba(255, 255, 255, 0.1);
+          color: var(--af-text-main, #e2e8f0);
+          border: 1px solid rgba(255, 255, 255, 0.2);
+          border-radius: 4px;
+          padding: 2px 8px;
+          font-size: 11px;
+          cursor: pointer;
+          transition: background 0.15s ease;
+        }
+
+        .btn-video-lightbox:hover {
+          background: var(--af-primary, #4edea3);
+          color: #000;
+        }
+
+        .attached-media-list {
+          display: flex;
+          flex-direction: column;
+          gap: 6px;
+          margin-top: 8px;
+        }
+
+        .attached-media-card {
+          display: flex;
+          align-items: center;
+          gap: 8px;
+          padding: 6px 10px;
+          border-radius: 6px;
+          background: rgba(0, 0, 0, 0.35);
+          border: 1px solid var(--af-border, rgba(255, 255, 255, 0.12));
+        }
+
+        .media-icon-box {
+          font-size: 16px;
+        }
+
+        .media-info-box {
+          flex: 1;
+          min-width: 0;
+        }
+
+        .media-name {
+          font-size: 12px;
+          color: var(--af-text-main, #e2e8f0);
+          white-space: nowrap;
+          overflow: hidden;
+          text-overflow: ellipsis;
+        }
+
+        .media-sub {
+          font-size: 10px;
+          color: var(--af-text-muted, #94a3b8);
+          display: flex;
+          align-items: center;
+          gap: 6px;
+        }
+
+        .media-upload-tag {
+          color: #38bdf8;
+        }
+
+        .media-ready-tag {
+          color: var(--af-primary, #4edea3);
+        }
+
+        .btn-remove-media {
+          background: transparent;
+          border: none;
+          color: #ef4444;
+          font-size: 14px;
+          cursor: pointer;
+          padding: 2px 6px;
+        }
+
         .agent-reply-header {
           font-weight: 600;
           color: var(--af-primary, #4edea3);
@@ -2376,24 +2727,49 @@ export class AgentFeedbackWidget extends CustomElementBase {
                 >${this.feedbackContent}</textarea>
               </div>
 
-              <!-- 截图附件 (支持多张上传，最多 6 张) -->
+              <!-- 截图/录屏附件 (支持多张上传，最多 6 项) -->
               <div class="screenshot-section">
                 <div class="screenshot-actions">
-                  <button class="btn-secondary btn-capture-screen" ${this.attachedScreenshots.length >= 6 ? 'disabled' : ''}>
+                  <button class="btn-secondary btn-capture-screen" ${this.attachedScreenshots.length + this.attachedMedia.length >= 6 ? 'disabled' : ''}>
                     📸 截取当前界面
                   </button>
-                  <label class="btn-secondary ${this.attachedScreenshots.length >= 6 ? 'disabled' : ''}" style="margin: 0; cursor: pointer;">
-                    📁 上传本地截图 ${this.attachedScreenshots.length > 0 ? `(${this.attachedScreenshots.length}/6)` : ''}
+                  <label class="btn-secondary ${this.attachedScreenshots.length + this.attachedMedia.length >= 6 ? 'disabled' : ''}" style="margin: 0; cursor: pointer;">
+                    📁 上传截图/录屏 ${this.attachedScreenshots.length + this.attachedMedia.length > 0 ? `(${this.attachedScreenshots.length + this.attachedMedia.length}/6)` : ''}
                     <input
                       type="file"
-                      accept="image/*"
+                      accept="image/*,video/mp4,video/webm,video/quicktime"
                       multiple
                       class="screenshot-file-input"
                       style="display: none;"
-                      ${this.attachedScreenshots.length >= 6 ? 'disabled' : ''}
+                      ${this.attachedScreenshots.length + this.attachedMedia.length >= 6 ? 'disabled' : ''}
                     />
                   </label>
                 </div>
+                ${
+                  this.attachedMedia.length > 0
+                    ? `
+                  <div class="attached-media-list">
+                    ${this.attachedMedia
+                      .map(
+                        (media, idx) => `
+                      <div class="attached-media-card">
+                        <div class="media-icon-box">🎬</div>
+                        <div class="media-info-box">
+                          <div class="media-name">${media.filename}</div>
+                          <div class="media-sub">
+                            ${media.size ? `${(media.size / (1024 * 1024)).toFixed(1)} MB` : ''}
+                            ${media.isUploading ? `<span class="media-upload-tag" data-filename="${media.filename}">上传中 ${media.uploadProgress || 0}%</span>` : '<span class="media-ready-tag">已就绪</span>'}
+                          </div>
+                        </div>
+                        <button class="btn-remove-media" data-index="${idx}" title="移除此附件">✕</button>
+                      </div>
+                    `
+                      )
+                      .join('')}
+                  </div>
+                `
+                    : ''
+                }
                 ${
                   this.attachedScreenshots.length > 0
                     ? `
@@ -2445,10 +2821,14 @@ export class AgentFeedbackWidget extends CustomElementBase {
             ? `
           <div class="af-lightbox" title="点击任意空白处关闭">
             <div class="af-lightbox-header">
-              <span class="af-lightbox-title">${this.lightboxTitle || '截图详情'}</span>
+              <span class="af-lightbox-title">${this.lightboxTitle || '附件详情'}</span>
               <button class="af-lightbox-close" type="button" aria-label="关闭">&times;</button>
             </div>
-            <img src="${this.lightboxSrc}" class="af-lightbox-img" alt="大图预览" />
+            ${
+              isVideoMedia(this.lightboxSrc)
+                ? `<video src="${this.lightboxSrc}" class="af-lightbox-video" controls autoplay playsinline></video>`
+                : `<img src="${this.lightboxSrc}" class="af-lightbox-img" alt="大图预览" />`
+            }
           </div>
         `
             : ''
