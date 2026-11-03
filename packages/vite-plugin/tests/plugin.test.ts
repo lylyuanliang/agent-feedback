@@ -81,6 +81,19 @@ class MockReq extends EventEmitter {
     this.headers = headers;
   }
 
+  sendBuffer(buf: Buffer) {
+    process.nextTick(() => {
+      this.emit('data', buf);
+      this.emit('end');
+    });
+  }
+
+  pipe(dest: any) {
+    this.on('data', (chunk) => dest.write(chunk));
+    this.on('end', () => dest.end());
+    return dest;
+  }
+
   send(body: string) {
     process.nextTick(() => {
       this.emit('data', Buffer.from(body));
@@ -92,7 +105,7 @@ class MockReq extends EventEmitter {
 /**
  * 模拟 HTTP 响应
  */
-class MockRes {
+class MockRes extends EventEmitter {
   public statusCode = 200;
   public headers: Record<string, string> = {};
   public body = '';
@@ -108,6 +121,17 @@ class MockRes {
     return this.headers[key.toLowerCase()];
   }
 
+  write(chunk: any) {
+    const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+    if (!this.binaryBody) {
+      this.binaryBody = buf;
+    } else {
+      this.binaryBody = Buffer.concat([this.binaryBody, buf]);
+    }
+    this.body = this.binaryBody.toString('utf-8');
+    return true;
+  }
+
   end(data?: string | Buffer) {
     if (data) {
       if (Buffer.isBuffer(data)) {
@@ -119,6 +143,7 @@ class MockRes {
       }
     }
     this.isFinished = true;
+    this.emit('finish');
     for (const listener of this.endListeners) {
       listener();
     }
@@ -714,5 +739,174 @@ describe('@agent-feedback/vite-plugin - Sentinel Auto Lifecycle & New Project In
 
     await new Promise(r => setTimeout(r, 80));
     assert.ok(true, '关闭服务后正常清理无异常');
+  });
+});
+
+describe('@agent-feedback/vite-plugin Multipart Media Streaming & HTTP 206 Range Video', () => {
+  const tmpMediaDir = path.resolve('D:/file_save/workspace/github/agent-feedback', '.tmp-test-vite-media');
+  let server: MockDevServer;
+
+  beforeEach(() => {
+    fs.mkdirSync(tmpMediaDir, { recursive: true });
+    server = new MockDevServer(tmpMediaDir);
+  });
+
+  afterEach(() => {
+    try {
+      fs.rmSync(tmpMediaDir, { recursive: true, force: true });
+    } catch {}
+  });
+
+  it('should handle chunked streaming upload (POST /api/__agent_feedback/media/chunk) and assemble final file', async () => {
+    const plugin = agentFeedback({ storageDir: '.agent/feedback' });
+    plugin.configureServer?.(server);
+
+    const uploadId = 'test_vid_' + Date.now();
+    const fileName = 'gesture_demo.mp4';
+    const chunk1 = Buffer.from('CHUNK_ONE_DATA_');
+    const chunk2 = Buffer.from('CHUNK_TWO_DATA_');
+    const chunk3 = Buffer.from('CHUNK_THREE_DATA');
+
+    // 1. 上传第 0 块
+    const req0 = new MockReq('POST', '/api/__agent_feedback/media/chunk', {
+      'x-upload-id': uploadId,
+      'x-chunk-index': '0',
+      'x-total-chunks': '3',
+      'x-file-name': fileName
+    });
+    const res0 = new MockRes();
+    const p0 = server.dispatch(req0, res0);
+    req0.sendBuffer(chunk1);
+    await p0;
+    assert.strictEqual(res0.statusCode, 200);
+    const body0 = JSON.parse(res0.body);
+    assert.strictEqual(body0.completed, false);
+    assert.strictEqual(body0.receivedChunk, 0);
+
+    // 2. 上传第 1 块
+    const req1 = new MockReq('POST', '/api/__agent_feedback/media/chunk', {
+      'x-upload-id': uploadId,
+      'x-chunk-index': '1',
+      'x-total-chunks': '3',
+      'x-file-name': fileName
+    });
+    const res1 = new MockRes();
+    const p1 = server.dispatch(req1, res1);
+    req1.sendBuffer(chunk2);
+    await p1;
+    assert.strictEqual(res1.statusCode, 200);
+    const body1 = JSON.parse(res1.body);
+    assert.strictEqual(body1.completed, false);
+
+    // 3. 上传第 2 块 (最后一块 -> 触发合并)
+    const req2 = new MockReq('POST', '/api/__agent_feedback/media/chunk', {
+      'x-upload-id': uploadId,
+      'x-chunk-index': '2',
+      'x-total-chunks': '3',
+      'x-file-name': fileName
+    });
+    const res2 = new MockRes();
+    const p2 = server.dispatch(req2, res2);
+    req2.sendBuffer(chunk3);
+    await p2;
+    assert.strictEqual(res2.statusCode, 200);
+    const body2 = JSON.parse(res2.body);
+    assert.strictEqual(body2.completed, true);
+    assert.strictEqual(body2.type, 'video');
+    assert.ok(body2.url.startsWith('media/'));
+    assert.strictEqual(body2.size, chunk1.length + chunk2.length + chunk3.length);
+
+    // 验证合并后的文件物理存在且内容正确
+    const assembledPath = path.resolve(tmpMediaDir, '.agent/feedback', body2.url);
+    assert.ok(fs.existsSync(assembledPath));
+    const finalContent = fs.readFileSync(assembledPath, 'utf-8');
+    assert.strictEqual(finalContent, 'CHUNK_ONE_DATA_CHUNK_TWO_DATA_CHUNK_THREE_DATA');
+  });
+
+  it('should handle single media streaming upload (POST /api/__agent_feedback/media/upload)', async () => {
+    const plugin = agentFeedback({ storageDir: '.agent/feedback' });
+    plugin.configureServer?.(server);
+
+    const testVideoContent = Buffer.from('RAW_VIDEO_STREAM_BYTES_CONTENT');
+    const req = new MockReq('POST', '/api/__agent_feedback/media/upload', {
+      'x-file-name': 'direct_record.webm'
+    });
+    const res = new MockRes();
+    const p = server.dispatch(req, res);
+    req.sendBuffer(testVideoContent);
+    await p;
+
+    assert.strictEqual(res.statusCode, 200);
+    const body = JSON.parse(res.body);
+    assert.strictEqual(body.completed, true);
+    assert.strictEqual(body.type, 'video');
+    assert.ok(body.url.endsWith('.webm'));
+    assert.strictEqual(body.size, testVideoContent.length);
+  });
+
+  it('should stream static media file with full 200 and partial 206 Range support (GET /api/__agent_feedback/media/<file>)', async () => {
+    const plugin = agentFeedback({ storageDir: '.agent/feedback' });
+    plugin.configureServer?.(server);
+
+    const mediaDir = path.resolve(tmpMediaDir, '.agent/feedback/media');
+    fs.mkdirSync(mediaDir, { recursive: true });
+    const sampleVideoFile = 'sample.mp4';
+    const sampleData = Buffer.from('0123456789abcdefghijklmnopqrstuvwxyz'); // 36 bytes
+    fs.writeFileSync(path.resolve(mediaDir, sampleVideoFile), sampleData);
+
+    // 1. 无 Range 请求: 返回 200 全量流
+    const reqFull = new MockReq('GET', `/api/__agent_feedback/media/${sampleVideoFile}`);
+    const resFull = new MockRes();
+    await server.dispatch(reqFull, resFull);
+    assert.strictEqual(resFull.statusCode, 200);
+    assert.strictEqual(resFull.getHeader('accept-ranges'), 'bytes');
+    assert.strictEqual(resFull.getHeader('content-type'), 'video/mp4');
+    assert.strictEqual(Number(resFull.getHeader('content-length')), 36);
+    assert.strictEqual(resFull.body, '0123456789abcdefghijklmnopqrstuvwxyz');
+
+    // 2. 有 Range 请求: 返回 206 Partial Content (如 bytes=10-19)
+    const reqRange = new MockReq('GET', `/api/__agent_feedback/media/${sampleVideoFile}`, {
+      range: 'bytes=10-19'
+    });
+    const resRange = new MockRes();
+    await server.dispatch(reqRange, resRange);
+    assert.strictEqual(resRange.statusCode, 206);
+    assert.strictEqual(resRange.getHeader('content-range'), 'bytes 10-19/36');
+    assert.strictEqual(Number(resRange.getHeader('content-length')), 10);
+    assert.strictEqual(resRange.getHeader('content-type'), 'video/mp4');
+    assert.strictEqual(resRange.body, 'abcdefghij');
+
+    // 3. 不存在的媒体文件: 返回 404
+    const req404 = new MockReq('GET', '/api/__agent_feedback/media/not_exist.mp4');
+    const res404 = new MockRes();
+    await server.dispatch(req404, res404);
+    assert.strictEqual(res404.statusCode, 404);
+  });
+
+  it('should sync media items when submitting feedback via /submit', async () => {
+    const plugin = agentFeedback({ storageDir: '.agent/feedback' });
+    plugin.configureServer?.(server);
+
+    const req = new MockReq('POST', '/api/__agent_feedback/submit');
+    const res = new MockRes();
+    const p = server.dispatch(req, res);
+    req.send(JSON.stringify({
+      id: 9988,
+      content: '手势异常',
+      screenshots: ['media/sample_video.mp4', 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==']
+    }));
+    await p;
+
+    assert.strictEqual(res.statusCode, 200);
+    const listReq = new MockReq('GET', '/api/__agent_feedback/list');
+    const listRes = new MockRes();
+    await server.dispatch(listReq, listRes);
+    const list = JSON.parse(listRes.body);
+    const item = list.find((i: any) => i.id === 9988);
+    assert.ok(item, 'Item should be saved');
+    assert.ok(item.media && item.media.length > 0, 'Media array should be populated');
+    const videoMedia = item.media.find((m: any) => m.url === 'media/sample_video.mp4');
+    assert.ok(videoMedia, 'Video media item should be registered');
+    assert.strictEqual(videoMedia.type, 'video');
   });
 });

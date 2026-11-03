@@ -7,12 +7,14 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { startSentinel, detectAntigravityConversation } from '@lylyuanliang/agent-feedback-sentinel';
 import type { WatcherAdapter } from '@lylyuanliang/agent-feedback-sentinel';
-import type {
-  InAppFeedback,
-  FeedbackDateIndex,
-  FeedbackStatus,
-  FeedbackType,
-  FeedbackTheme
+import {
+  isVideoMedia,
+  type InAppFeedback,
+  type FeedbackMediaItem,
+  type FeedbackDateIndex,
+  type FeedbackStatus,
+  type FeedbackType,
+  type FeedbackTheme
 } from '@lylyuanliang/agent-feedback-core';
 
 /**
@@ -171,6 +173,108 @@ export function syncLegacyQueue(feedbackDir: string): void {
 }
 
 /**
+ * 流式合并临时分块文件
+ */
+export async function assembleChunks(tempDir: string, totalChunks: number, targetPath: string): Promise<number> {
+  const writeStream = fs.createWriteStream(targetPath);
+  let totalBytes = 0;
+
+  for (let i = 0; i < totalChunks; i++) {
+    const chunkPath = path.resolve(tempDir, `chunk_${i}`);
+    if (!fs.existsSync(chunkPath)) {
+      writeStream.close();
+      throw new Error(`Missing chunk index ${i}`);
+    }
+    const chunkBuf = fs.readFileSync(chunkPath);
+    totalBytes += chunkBuf.length;
+    writeStream.write(chunkBuf);
+  }
+
+  await new Promise<void>((resolve, reject) => {
+    writeStream.end(() => resolve());
+    writeStream.on('error', reject);
+  });
+
+  // 合并完成，彻底清理临时分块目录
+  try {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  } catch {}
+
+  return totalBytes;
+}
+
+/**
+ * 静态媒体流式传输服务 (支持 HTTP 206 Partial Content Range 视频点播)
+ */
+export function streamStaticMediaFile(req: any, res: any, filePath: string): void {
+  if (!fs.existsSync(filePath)) {
+    res.statusCode = 404;
+    res.setHeader('Content-Type', 'application/json');
+    res.end(JSON.stringify({ error: 'Media file not found' }));
+    return;
+  }
+
+  const stat = fs.statSync(filePath);
+  const fileSize = stat.size;
+  const ext = path.extname(filePath).slice(1).toLowerCase();
+
+  const MIME_MAP: Record<string, string> = {
+    mp4: 'video/mp4',
+    webm: 'video/webm',
+    mov: 'video/quicktime',
+    m4v: 'video/mp4',
+    ogg: 'video/ogg',
+    png: 'image/png',
+    jpg: 'image/jpeg',
+    jpeg: 'image/jpeg',
+    webp: 'image/webp',
+    gif: 'image/gif'
+  };
+
+  const contentType = MIME_MAP[ext] || 'application/octet-stream';
+  const range = req.headers?.range;
+
+  if (range) {
+    const parts = range.replace(/bytes=/, '').split('-');
+    const start = parseInt(parts[0], 10);
+    const end = parts[1] ? parseInt(parts[1], 10) : fileSize - 1;
+
+    if (isNaN(start) || isNaN(end) || start >= fileSize || end >= fileSize || start > end) {
+      res.statusCode = 416; // Range Not Satisfiable
+      res.setHeader('Content-Range', `bytes */${fileSize}`);
+      res.end();
+      return;
+    }
+
+    const chunksize = end - start + 1;
+    res.statusCode = 206; // Partial Content
+    res.setHeader('Content-Range', `bytes ${start}-${end}/${fileSize}`);
+    res.setHeader('Accept-Ranges', 'bytes');
+    res.setHeader('Content-Length', chunksize);
+    res.setHeader('Content-Type', contentType);
+
+    const fileStream = fs.createReadStream(filePath, { start, end });
+    fileStream.on('error', () => {
+      if (!res.headersSent) res.statusCode = 500;
+      res.end();
+    });
+    fileStream.pipe(res);
+  } else {
+    res.statusCode = 200;
+    res.setHeader('Accept-Ranges', 'bytes');
+    res.setHeader('Content-Length', fileSize);
+    res.setHeader('Content-Type', contentType);
+
+    const fileStream = fs.createReadStream(filePath);
+    fileStream.on('error', () => {
+      if (!res.headersSent) res.statusCode = 500;
+      res.end();
+    });
+    fileStream.pipe(res);
+  }
+}
+
+/**
  * 哨兵自动生命周期托管选项
  */
 export interface SentinelPluginOptions {
@@ -309,10 +413,14 @@ export function agentFeedback(options: AgentFeedbackPluginOptions = {}): AgentFe
       const projectRoot = server?.config?.root || process.cwd();
       const feedbackDir = path.resolve(projectRoot, storageRelDir);
       const screenshotsDir = path.resolve(feedbackDir, 'screenshots');
+      const mediaDir = path.resolve(feedbackDir, 'media');
 
       // 确保本地持久化存储目录存在
       if (!fs.existsSync(feedbackDir)) {
         fs.mkdirSync(feedbackDir, { recursive: true });
+      }
+      if (!fs.existsSync(mediaDir)) {
+        fs.mkdirSync(mediaDir, { recursive: true });
       }
 
       // 向后兼容迁移：启动时自动将 feedback_queue.json 迁移合并到分片中
@@ -347,7 +455,8 @@ export function agentFeedback(options: AgentFeedbackPluginOptions = {}): AgentFe
           // 统一 CORS 响应头，支持跨源与移动端访问
           res.setHeader('Access-Control-Allow-Origin', '*');
           res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-          res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+          res.setHeader('Access-Control-Allow-Headers', 'Content-Type, X-Upload-Id, X-Chunk-Index, X-Total-Chunks, X-File-Name, Range');
+          res.setHeader('Access-Control-Expose-Headers', 'Content-Range, Accept-Ranges, Content-Length');
 
           if (req.method === 'OPTIONS') {
             res.statusCode = 204;
@@ -434,6 +543,27 @@ export function agentFeedback(options: AgentFeedbackPluginOptions = {}): AgentFe
                     data.screenshots = savedPaths;
                     delete (data as any).screenshot;
                   }
+                }
+
+                // 规范与同步结构化 media 数组 (支持独立二进制流式存储)
+                if (!Array.isArray(data.media)) {
+                  data.media = [];
+                }
+                // 向后兼容：如果 screenshots 包含 media/ 视频或附件，自动同步到 media 结构化列表
+                if (Array.isArray(data.screenshots)) {
+                  data.screenshots.forEach((shotPath: string) => {
+                    const isVid = isVideoMedia(shotPath);
+                    if (isVid || shotPath.startsWith('media/')) {
+                      const alreadyInMedia = data.media!.some((m: FeedbackMediaItem) => m.url === shotPath);
+                      if (!alreadyInMedia) {
+                        data.media!.push({
+                          type: isVid ? 'video' : 'image',
+                          url: shotPath,
+                          filename: path.basename(shotPath)
+                        });
+                      }
+                    }
+                  });
                 }
 
                 // 持久化至当天分片并更新索引
@@ -618,6 +748,130 @@ export function agentFeedback(options: AgentFeedbackPluginOptions = {}): AgentFe
               res.end(JSON.stringify({ error: 'Screenshot not found' }));
               return;
             }
+          }
+
+          // 7. 静态服务独立媒体文件 (带 HTTP 206 Partial Content Range 视频点播支持): GET /api/__agent_feedback/media/<filename>
+          if (req.method === 'GET' && urlPath.startsWith('/api/__agent_feedback/media/')) {
+            const fileName = path.basename(urlPath);
+            const filePath = path.resolve(mediaDir, fileName);
+            streamStaticMediaFile(req, res, filePath);
+            return;
+          }
+
+          // 8. 独立分块媒体流式上传端点: POST /api/__agent_feedback/media/chunk
+          if (req.method === 'POST' && urlPath === '/api/__agent_feedback/media/chunk') {
+            const urlObj = new URL(rawUrl, 'http://localhost');
+            const uploadId = (req.headers['x-upload-id'] as string) || urlObj.searchParams.get('uploadId') || '';
+            const chunkIndex = parseInt((req.headers['x-chunk-index'] as string) || urlObj.searchParams.get('chunkIndex') || '0', 10);
+            const totalChunks = parseInt((req.headers['x-total-chunks'] as string) || urlObj.searchParams.get('totalChunks') || '1', 10);
+            const rawFileName = (req.headers['x-file-name'] as string) || urlObj.searchParams.get('fileName') || 'upload.bin';
+            const decodedFileName = decodeURIComponent(rawFileName);
+
+            const safeUploadId = uploadId.replace(/[^a-zA-Z0-9_-]/g, '') || `up_${Date.now()}`;
+            const safeExt = path.extname(decodedFileName) || '.mp4';
+            const baseName = path.basename(decodedFileName, safeExt).replace(/[^a-zA-Z0-9_\u4e00-\u9fa5-]/g, '_') || 'video';
+            const tempChunkDir = path.resolve(mediaDir, `.chunks_${safeUploadId}`);
+
+            if (!fs.existsSync(tempChunkDir)) {
+              fs.mkdirSync(tempChunkDir, { recursive: true });
+            }
+
+            const chunkFilePath = path.resolve(tempChunkDir, `chunk_${chunkIndex}`);
+            const writeStream = fs.createWriteStream(chunkFilePath);
+
+            req.pipe(writeStream);
+
+            writeStream.on('finish', async () => {
+              try {
+                // 检查是否所有分块都已到达
+                let allArrived = true;
+                for (let i = 0; i < totalChunks; i++) {
+                  if (!fs.existsSync(path.resolve(tempChunkDir, `chunk_${i}`))) {
+                    allArrived = false;
+                    break;
+                  }
+                }
+
+                if (allArrived) {
+                  const finalFileName = `${Date.now()}_${baseName}${safeExt}`;
+                  const finalPath = path.resolve(mediaDir, finalFileName);
+                  const finalSize = await assembleChunks(tempChunkDir, totalChunks, finalPath);
+
+                  const isVideo = isVideoMedia(finalFileName);
+                  res.setHeader('Content-Type', 'application/json');
+                  res.statusCode = 200;
+                  res.end(JSON.stringify({
+                    success: true,
+                    completed: true,
+                    filename: finalFileName,
+                    url: `media/${finalFileName}`,
+                    type: isVideo ? 'video' : 'image',
+                    size: finalSize
+                  }));
+                } else {
+                  res.setHeader('Content-Type', 'application/json');
+                  res.statusCode = 200;
+                  res.end(JSON.stringify({
+                    success: true,
+                    completed: false,
+                    receivedChunk: chunkIndex,
+                    totalChunks
+                  }));
+                }
+              } catch (err: any) {
+                res.statusCode = 500;
+                res.setHeader('Content-Type', 'application/json');
+                res.end(JSON.stringify({ error: err?.message || 'Failed to assemble media chunks' }));
+              }
+            });
+
+            writeStream.on('error', (err: any) => {
+              res.statusCode = 500;
+              res.setHeader('Content-Type', 'application/json');
+              res.end(JSON.stringify({ error: err?.message || 'Failed to write media chunk' }));
+            });
+            return;
+          }
+
+          // 9. 单文件流式上传端点: POST /api/__agent_feedback/media/upload
+          if (req.method === 'POST' && urlPath === '/api/__agent_feedback/media/upload') {
+            const urlObj = new URL(rawUrl, 'http://localhost');
+            const rawFileName = (req.headers['x-file-name'] as string) || urlObj.searchParams.get('fileName') || `media_${Date.now()}.mp4`;
+            const decodedFileName = decodeURIComponent(rawFileName);
+            const safeExt = path.extname(decodedFileName) || '.mp4';
+            const baseName = path.basename(decodedFileName, safeExt).replace(/[^a-zA-Z0-9_\u4e00-\u9fa5-]/g, '_') || 'file';
+            const finalFileName = `${Date.now()}_${baseName}${safeExt}`;
+            const finalPath = path.resolve(mediaDir, finalFileName);
+
+            const writeStream = fs.createWriteStream(finalPath);
+            let bytesWritten = 0;
+
+            req.on('data', (chunk: any) => {
+              bytesWritten += chunk.length;
+            });
+
+            req.pipe(writeStream);
+
+            writeStream.on('finish', () => {
+              const isVideo = isVideoMedia(finalFileName);
+              res.setHeader('Content-Type', 'application/json');
+              res.statusCode = 200;
+              res.end(JSON.stringify({
+                success: true,
+                completed: true,
+                filename: finalFileName,
+                url: `media/${finalFileName}`,
+                type: isVideo ? 'video' : 'image',
+                size: bytesWritten
+              }));
+            });
+
+            writeStream.on('error', (err: any) => {
+              res.statusCode = 500;
+              res.setHeader('Content-Type', 'application/json');
+              res.end(JSON.stringify({ error: err?.message || 'Failed to upload media file' }));
+            });
+            return;
           }
 
           next();
