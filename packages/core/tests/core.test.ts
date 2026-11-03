@@ -2,6 +2,9 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert';
 import {
   sanitizeFeedbackContent,
+  isVideoMedia,
+  type FeedbackMediaItem,
+  type FeedbackMediaType,
   type InAppFeedback,
   type FeedbackStatus,
   type PlatformType,
@@ -158,6 +161,59 @@ describe('@agent-feedback/core protocol & schema', () => {
   it('should support FeedbackTheme type values', () => {
     const themes: FeedbackTheme[] = ['dark', 'light', 'auto'];
     assert.strictEqual(themes.length, 3);
+
+  });
+
+  it('should support FeedbackMediaItem attachments and isVideoMedia detection', () => {
+    const mediaList: FeedbackMediaItem[] = [
+      {
+        id: 'm1',
+        type: 'image',
+        url: 'media/1793678212361_shot_0.jpg',
+        filename: 'screen.jpg',
+        size: 102400,
+        mimeType: 'image/jpeg'
+      },
+      {
+        id: 'm2',
+        type: 'video',
+        url: 'media/1793678212361_record.mp4',
+        filename: 'gesture_bug.mp4',
+        size: 5242880,
+        mimeType: 'video/mp4'
+      }
+    ];
+
+    const fb: InAppFeedback = {
+      id: 201,
+      timestamp: Date.now(),
+      receivedAt: new Date().toISOString(),
+      content: '手势滑动存在卡顿，附带录屏演示',
+      status: 'pending',
+      telemetry: {
+        route: '/topo',
+        viewport: { width: 390, height: 844, dpr: 3 },
+        userAgent: 'test-agent',
+        platform: 'android'
+      },
+      media: mediaList
+    };
+
+    assert.strictEqual(fb.media?.length, 2);
+    assert.strictEqual(fb.media[0].type, 'image');
+    assert.strictEqual(fb.media[1].type, 'video');
+
+    // 测试 isVideoMedia 启发式判断
+    assert.strictEqual(isVideoMedia('media/demo.mp4'), true);
+    assert.strictEqual(isVideoMedia('media/demo.webm'), true);
+    assert.strictEqual(isVideoMedia('media/demo.MOV'), true);
+    assert.strictEqual(isVideoMedia('media/demo.m4v'), true);
+    assert.strictEqual(isVideoMedia('https://domain.com/video.mp4?token=123'), true);
+    assert.strictEqual(isVideoMedia('', 'video/mp4'), true);
+    assert.strictEqual(isVideoMedia('media/screenshot.png'), false);
+    assert.strictEqual(isVideoMedia('media/photo.jpg'), false);
+    assert.strictEqual(isVideoMedia(''), false);
+
   });
 });
 

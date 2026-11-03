@@ -60,6 +60,24 @@ export interface TelemetrySnapshot {
 /**
  * 应用内反馈数据协议主实体
  */
+/**
+ * 媒体类型定义：图片或视频
+ */
+export type FeedbackMediaType = 'image' | 'video';
+
+/**
+ * 结构化媒体附件实体 (支持视频与大图独立二进制流式分块存储)
+ */
+export interface FeedbackMediaItem {
+  id?: string;
+  type: FeedbackMediaType;
+  url: string;
+  filename?: string;
+  size?: number;
+  mimeType?: string;
+  thumbnail?: string;
+}
+
 export interface InAppFeedback {
   id: number;
   type?: FeedbackType;
@@ -72,6 +90,7 @@ export interface InAppFeedback {
   updatedAt?: string;
   telemetry: TelemetrySnapshot;
   screenshots?: string[];
+  media?: FeedbackMediaItem[];
   consoleLogs?: ConsoleLogEntry[];
 }
 
@@ -220,4 +239,22 @@ export function sanitizeFeedbackContent(content: string): SecurityTriageResult {
   }
 
   return { isSafe: true };
+}
+
+/**
+ * 启发式判断文件路径、URL 或 MIME 是否属于视频媒体
+ */
+export function isVideoMedia(pathOrUrl?: string, mimeType?: string): boolean {
+  if (mimeType && mimeType.startsWith('video/')) return true;
+  if (!pathOrUrl || typeof pathOrUrl !== 'string') return false;
+  const clean = pathOrUrl.split('?')[0].toLowerCase();
+  return (
+    clean.endsWith('.mp4') ||
+    clean.endsWith('.webm') ||
+    clean.endsWith('.mov') ||
+    clean.endsWith('.m4v') ||
+    clean.endsWith('.ogg') ||
+    clean.endsWith('.mkv') ||
+    clean.endsWith('.avi')
+  );
 }
