@@ -14,7 +14,9 @@ import {
   type FeedbackStatus,
   type FeedbackTheme,
   type FeedbackExtensionTab,
-  type ExtensionContext
+  type ExtensionContext,
+  type AccessControlConfig,
+  type HostChannelConfig
 } from '@lylyuanliang/agent-feedback-core';
 
 export { isVideoMedia };
@@ -28,7 +30,9 @@ export type {
   FeedbackStatus,
   FeedbackTheme,
   FeedbackExtensionTab,
-  ExtensionContext
+  ExtensionContext,
+  AccessControlConfig,
+  HostChannelConfig
 };
 
 // 全局扩展槽注册表
@@ -61,6 +65,32 @@ export function registerExtensionTab(tab: FeedbackExtensionTab): void {
   }
 }
 
+let globalAccessControl: AccessControlConfig = {};
+let globalHostChannel: HostChannelConfig = {};
+let cachedAuthorized: boolean | null = null;
+
+function notifyWidgetsRefresh(): void {
+  if (typeof document !== 'undefined' && typeof document.querySelectorAll === 'function') {
+    const widgets = document.querySelectorAll('agent-feedback-widget');
+    widgets.forEach((w: any) => {
+      if (typeof w.refreshWidget === 'function') {
+        w.refreshWidget();
+      }
+    });
+  }
+}
+
+/**
+ * 计算字符串的 SHA-256 哈希值 (十六进制小写)
+ */
+export async function computeSha256(str: string): Promise<string> {
+  const encoder = new TextEncoder();
+  const data = encoder.encode(str);
+  const hashBuffer = await crypto.subtle.digest('SHA-256', data);
+  const hashArray = Array.from(new Uint8Array(hashBuffer));
+  return hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
+}
+
 /**
  * 设置全域 API 基地址 (用于移动端真机、内网穿透或原生容器环境)
  */
@@ -68,6 +98,15 @@ export function setApiBase(url: string): void {
   if (typeof window === 'undefined') return;
   const clean = (url || '').trim().replace(/\/+$/, '');
   (window as any).__AGENT_FEEDBACK_API_BASE__ = clean;
+  try {
+    if (typeof localStorage !== 'undefined') {
+      if (clean) {
+        localStorage.setItem('af_api_base', clean);
+      } else {
+        localStorage.removeItem('af_api_base');
+      }
+    }
+  } catch {}
 
   if (typeof document !== 'undefined' && typeof document.querySelectorAll === 'function') {
     const widgets = document.querySelectorAll('agent-feedback-widget');
@@ -86,7 +125,204 @@ export function getApiBase(): string {
   if (typeof window !== 'undefined' && (window as any).__AGENT_FEEDBACK_API_BASE__) {
     return (window as any).__AGENT_FEEDBACK_API_BASE__;
   }
+  try {
+    if (typeof localStorage !== 'undefined') {
+      const stored = localStorage.getItem('af_api_base');
+      if (stored) return stored.trim().replace(/\/+$/, '');
+    }
+  } catch {}
   return '';
+}
+
+/**
+ * 设置访问控制与端侧授权配置
+ */
+export function setAccessControl(config: AccessControlConfig): void {
+  globalAccessControl = { ...(config || {}) };
+  if (typeof window !== 'undefined') {
+    (window as any).__AGENT_FEEDBACK_ACCESS_CONTROL__ = globalAccessControl;
+  }
+  cachedAuthorized = null;
+
+  const storageKey = globalAccessControl.storageKey || 'af_access_key';
+  try {
+    if (typeof localStorage !== 'undefined') {
+      const storedKey = localStorage.getItem(storageKey);
+      if (globalAccessControl.enabled && storedKey && globalAccessControl.keyHash) {
+        computeSha256(storedKey).then(hash => {
+          const valid = hash.toLowerCase() === globalAccessControl.keyHash!.toLowerCase();
+          cachedAuthorized = valid;
+          if (valid) {
+            localStorage.setItem(storageKey + '_verified_hash', hash);
+          } else {
+            localStorage.removeItem(storageKey + '_verified_hash');
+          }
+          notifyWidgetsRefresh();
+        }).catch(() => {});
+      }
+    }
+  } catch {}
+
+  notifyWidgetsRefresh();
+}
+
+/**
+ * 获取当前全局访问控制配置
+ */
+export function getAccessControl(): AccessControlConfig {
+  if (typeof window !== 'undefined' && (window as any).__AGENT_FEEDBACK_ACCESS_CONTROL__) {
+    return (window as any).__AGENT_FEEDBACK_ACCESS_CONTROL__;
+  }
+  if (typeof window !== 'undefined' && (window as any).__AGENT_FEEDBACK_OPTIONS__?.accessControl) {
+    return (window as any).__AGENT_FEEDBACK_OPTIONS__.accessControl;
+  }
+  return globalAccessControl;
+}
+
+/**
+ * 设置宿主官方反馈与工单渠道配置
+ */
+export function setHostChannel(config: HostChannelConfig): void {
+  globalHostChannel = { ...(config || {}) };
+  if (typeof window !== 'undefined') {
+    (window as any).__AGENT_FEEDBACK_HOST_CHANNEL__ = globalHostChannel;
+  }
+  notifyWidgetsRefresh();
+}
+
+/**
+ * 获取当前宿主官方渠道配置
+ */
+export function getHostChannel(): HostChannelConfig {
+  if (typeof window !== 'undefined' && (window as any).__AGENT_FEEDBACK_HOST_CHANNEL__) {
+    return (window as any).__AGENT_FEEDBACK_HOST_CHANNEL__;
+  }
+  if (typeof window !== 'undefined' && (window as any).__AGENT_FEEDBACK_OPTIONS__?.hostChannel) {
+    return (window as any).__AGENT_FEEDBACK_OPTIONS__.hostChannel;
+  }
+  return globalHostChannel;
+}
+
+/**
+ * 校验当前端侧是否已获得提交授权
+ */
+export function isAuthorized(customConfig?: AccessControlConfig): boolean {
+  const config = (customConfig && Object.keys(customConfig).length > 0)
+    ? customConfig
+    : getAccessControl();
+  if (!config.enabled) {
+    return true;
+  }
+
+  const storageKey = config.storageKey || 'af_access_key';
+  let storedKey: string | null = null;
+  let verifiedHash: string | null = null;
+  try {
+    if (typeof localStorage !== 'undefined') {
+      storedKey = localStorage.getItem(storageKey);
+      verifiedHash = localStorage.getItem(storageKey + '_verified_hash');
+    }
+  } catch {}
+
+  if (!storedKey) {
+    cachedAuthorized = false;
+    return false;
+  }
+
+  if (config.accessKey) {
+    const valid = storedKey === config.accessKey;
+    cachedAuthorized = valid;
+    return valid;
+  }
+
+  if (config.keyHash) {
+    if (verifiedHash && verifiedHash.toLowerCase() === config.keyHash.toLowerCase()) {
+      cachedAuthorized = true;
+      return true;
+    }
+    if (cachedAuthorized !== null) {
+      return cachedAuthorized;
+    }
+    computeSha256(storedKey).then(hash => {
+      const valid = hash.toLowerCase() === config.keyHash!.toLowerCase();
+      cachedAuthorized = valid;
+      try {
+        if (typeof localStorage !== 'undefined') {
+          if (valid) {
+            localStorage.setItem(storageKey + '_verified_hash', hash);
+          } else {
+            localStorage.removeItem(storageKey + '_verified_hash');
+          }
+        }
+      } catch {}
+      notifyWidgetsRefresh();
+    }).catch(() => {});
+
+    return false;
+  }
+
+  return true;
+}
+
+/**
+ * 验证并保存授权凭据
+ */
+export async function authorize(key: string, customConfig?: AccessControlConfig): Promise<boolean> {
+  const config = customConfig || getAccessControl();
+  const cleanKey = (key || '').trim();
+  if (!cleanKey) return false;
+
+  let isValid = false;
+  let computedHash = '';
+
+  if (!config.enabled) {
+    isValid = true;
+  } else if (config.accessKey && cleanKey === config.accessKey) {
+    isValid = true;
+  } else if (config.keyHash) {
+    computedHash = await computeSha256(cleanKey);
+    if (computedHash.toLowerCase() === config.keyHash.toLowerCase()) {
+      isValid = true;
+    }
+  } else if (!config.accessKey && !config.keyHash) {
+    isValid = true;
+  }
+
+  if (isValid) {
+    const storageKey = config.storageKey || 'af_access_key';
+    try {
+      if (typeof localStorage !== 'undefined') {
+        localStorage.setItem(storageKey, cleanKey);
+        if (computedHash) {
+          localStorage.setItem(storageKey + '_verified_hash', computedHash);
+        } else if (config.keyHash) {
+          const h = await computeSha256(cleanKey);
+          localStorage.setItem(storageKey + '_verified_hash', h);
+        }
+      }
+    } catch {}
+    cachedAuthorized = true;
+    notifyWidgetsRefresh();
+    return true;
+  }
+
+  return false;
+}
+
+/**
+ * 解除当前设备的授权状态并清空存储
+ */
+export function deauthorize(customConfig?: AccessControlConfig): void {
+  const config = customConfig || getAccessControl();
+  const storageKey = config.storageKey || 'af_access_key';
+  try {
+    if (typeof localStorage !== 'undefined') {
+      localStorage.removeItem(storageKey);
+      localStorage.removeItem(storageKey + '_verified_hash');
+    }
+  } catch {}
+  cachedAuthorized = false;
+  notifyWidgetsRefresh();
 }
 
 /**
@@ -119,6 +355,11 @@ export function closeFeedbackModal(): void {
 if (typeof window !== 'undefined') {
   (window as any).openAgentFeedbackModal = openFeedbackModal;
   (window as any).closeAgentFeedbackModal = closeFeedbackModal;
+  (window as any).setAgentFeedbackAccessControl = setAccessControl;
+  (window as any).setAgentFeedbackHostChannel = setHostChannel;
+  (window as any).isAgentFeedbackAuthorized = isAuthorized;
+  (window as any).authorizeAgentFeedback = authorize;
+  (window as any).deauthorizeAgentFeedback = deauthorize;
 }
 
 // 内存中的控制台日志环形缓冲区 (最大 30 条)
@@ -530,11 +771,13 @@ export class AgentFeedbackWidget extends CustomElementBase {
   }
 
   static get observedAttributes() {
-    return ['theme', 'primary-color', 'api-base'];
+    return ['theme', 'primary-color', 'api-base', 'access-control', 'host-channel', 'show-settings'];
   }
 
   public shadow: ShadowRoot;
   public apiBase: string = '';
+  public accessControlConfig: AccessControlConfig = {};
+  public hostChannelConfig: HostChannelConfig = {};
   private isOpen = false;
   private activeTab: string = 'submit';
   private hasProcessingItems = false;
@@ -597,7 +840,53 @@ export class AgentFeedbackWidget extends CustomElementBase {
     } else if (name === 'api-base') {
       this.apiBase = (newValue || '').trim().replace(/\/+$/, '');
       this.fetchHistoryQuickStatus();
+    } else if (name === 'access-control') {
+      try {
+        this.accessControlConfig = JSON.parse(newValue || '{}');
+        this.render();
+        this.bindEvents();
+      } catch {}
+    } else if (name === 'host-channel') {
+      try {
+        this.hostChannelConfig = JSON.parse(newValue || '{}');
+        this.render();
+        this.bindEvents();
+      } catch {}
+    } else if (name === 'show-settings') {
+      this.render();
+      this.bindEvents();
     }
+  }
+
+  public setAccessControl(config: AccessControlConfig): void {
+    this.accessControlConfig = { ...this.accessControlConfig, ...(config || {}) };
+    this.render();
+    this.bindEvents();
+  }
+
+  public setHostChannel(config: HostChannelConfig): void {
+    this.hostChannelConfig = { ...this.hostChannelConfig, ...(config || {}) };
+    this.render();
+    this.bindEvents();
+  }
+
+  public isAuthorized(): boolean {
+    return isAuthorized(this.accessControlConfig);
+  }
+
+  public async authorize(key: string): Promise<boolean> {
+    const ok = await authorize(key, this.accessControlConfig);
+    if (ok) {
+      this.render();
+      this.bindEvents();
+    }
+    return ok;
+  }
+
+  public deauthorize(): void {
+    deauthorize(this.accessControlConfig);
+    this.render();
+    this.bindEvents();
   }
 
   public setApiBase(url: string) {
@@ -665,12 +954,36 @@ export class AgentFeedbackWidget extends CustomElementBase {
       (this as any).style.setProperty('--af-primary', injectedOptions.primaryColor);
     }
 
+    const storedApiBase = (typeof localStorage !== 'undefined' ? localStorage.getItem('af_api_base') : null) || '';
     const initialApiBase =
       this.getAttribute?.('api-base') ||
+      storedApiBase ||
       injectedOptions?.apiBase ||
       getApiBase() ||
       '';
     this.apiBase = initialApiBase.trim().replace(/\/+$/, '');
+
+    let accessControl = getAccessControl();
+    if (this.getAttribute?.('access-control')) {
+      try {
+        accessControl = { ...accessControl, ...JSON.parse(this.getAttribute('access-control')!) };
+      } catch {}
+    }
+    if (injectedOptions?.accessControl) {
+      accessControl = { ...accessControl, ...injectedOptions.accessControl };
+    }
+    this.accessControlConfig = accessControl;
+
+    let hostChannel = getHostChannel();
+    if (this.getAttribute?.('host-channel')) {
+      try {
+        hostChannel = { ...hostChannel, ...JSON.parse(this.getAttribute('host-channel')!) };
+      } catch {}
+    }
+    if (injectedOptions?.hostChannel) {
+      hostChannel = { ...hostChannel, ...injectedOptions.hostChannel };
+    }
+    this.hostChannelConfig = hostChannel;
 
     this.render();
     this.bindEvents();
@@ -690,6 +1003,14 @@ export class AgentFeedbackWidget extends CustomElementBase {
   }
 
   public refreshWidget() {
+    const globalAC = getAccessControl();
+    if (globalAC && Object.keys(globalAC).length > 0) {
+      this.accessControlConfig = { ...this.accessControlConfig, ...globalAC };
+    }
+    const globalHC = getHostChannel();
+    if (globalHC && Object.keys(globalHC).length > 0) {
+      this.hostChannelConfig = { ...this.hostChannelConfig, ...globalHC };
+    }
     this.render();
     this.bindEvents();
   }
@@ -895,7 +1216,7 @@ export class AgentFeedbackWidget extends CustomElementBase {
     });
 
     // 2. 清理前一个扩展 Tab (严格遵循测试契约执行 cleanup)
-    if (prevTab !== 'submit' && prevTab !== 'history') {
+    if (prevTab !== 'submit' && prevTab !== 'history' && prevTab !== 'settings') {
       const cleanup = this.extensionCleanups.get(prevTab);
       if (typeof cleanup === 'function') {
         try {
@@ -910,6 +1231,7 @@ export class AgentFeedbackWidget extends CustomElementBase {
     // 3. 切换面板可见性
     const panelSubmit = this.shadow.querySelector?.('.af-tab-panel-submit') as HTMLElement;
     const panelHistory = this.shadow.querySelector?.('.af-tab-panel-history') as HTMLElement;
+    const panelSettings = this.shadow.querySelector?.('.af-tab-panel-settings') as HTMLElement;
     const allExtPanels = this.shadow.querySelectorAll?.('.af-tab-panel-ext');
 
     if (panelSubmit) {
@@ -917,6 +1239,9 @@ export class AgentFeedbackWidget extends CustomElementBase {
     }
     if (panelHistory) {
       panelHistory.style.display = newTab === 'history' ? 'block' : 'none';
+    }
+    if (panelSettings) {
+      panelSettings.style.display = newTab === 'settings' ? 'block' : 'none';
     }
     if (allExtPanels) {
       allExtPanels.forEach((p: any) => {
@@ -926,7 +1251,7 @@ export class AgentFeedbackWidget extends CustomElementBase {
     }
 
     // 4. 若新 Tab 是扩展 Tab，挂载或重新渲染该扩展容器
-    if (newTab !== 'submit' && newTab !== 'history') {
+    if (newTab !== 'submit' && newTab !== 'history' && newTab !== 'settings') {
       const extensions: FeedbackExtensionTab[] =
         typeof window !== 'undefined' ? (window as any).__AGENT_FEEDBACK_EXTENSIONS__ || [] : [];
       const currentExt = extensions.find(e => e.id === newTab);
@@ -1082,6 +1407,16 @@ export class AgentFeedbackWidget extends CustomElementBase {
    * 提交反馈至 DevServer
    */
   public async submitFeedback() {
+    if (!this.isAuthorized()) {
+      this.submitFeedbackMessage = {
+        type: 'error',
+        text: '受限访问保护：当前环境未授权，禁止提交反馈。'
+      };
+      this.render();
+      this.bindEvents();
+      return;
+    }
+
     const content = this.feedbackContent.trim();
     if (!content) {
       this.submitFeedbackMessage = { type: 'error', text: '请填写反馈内容' };
@@ -1346,6 +1681,11 @@ export class AgentFeedbackWidget extends CustomElementBase {
       tabHistory.addEventListener?.('click', () => this.setTab('history'));
     }
 
+    const tabSettings = this.shadow.querySelector?.('.tab-btn-settings');
+    if (tabSettings) {
+      tabSettings.addEventListener?.('click', () => this.setTab('settings'));
+    }
+
     // 4. 自定义扩展 Tab 按钮监听
     const extensions: FeedbackExtensionTab[] =
       typeof window !== 'undefined' ? (window as any).__AGENT_FEEDBACK_EXTENSIONS__ || [] : [];
@@ -1357,7 +1697,7 @@ export class AgentFeedbackWidget extends CustomElementBase {
     }
 
     // 5. 渲染当前自定义扩展 Tab 内容
-    if (this.activeTab !== 'submit' && this.activeTab !== 'history') {
+    if (this.activeTab !== 'submit' && this.activeTab !== 'history' && this.activeTab !== 'settings') {
       const currentExt = extensions.find(e => e.id === this.activeTab);
       const container = this.shadow.querySelector?.(`.ext-tab-container[data-tab-id="${this.activeTab}"]`) as HTMLElement;
       if (currentExt && container) {
@@ -1578,6 +1918,177 @@ export class AgentFeedbackWidget extends CustomElementBase {
         this.bindEvents();
       });
     }
+
+    // 9. 受限访问门禁验证 (Lockout Shield)
+    const btnVerifyAccess = this.shadow.querySelector?.('.btn-verify-access') as any;
+    const inputAccessKey = this.shadow.querySelector?.('.access-key-input') as any;
+    const verifyMsg = this.shadow.querySelector?.('.verify-feedback-msg') as any;
+    if (btnVerifyAccess && inputAccessKey) {
+      const doVerify = async () => {
+        const key = (inputAccessKey.value || '').trim();
+        if (!key) {
+          if (verifyMsg) {
+            verifyMsg.textContent = '请输入配对密钥';
+            verifyMsg.className = 'verify-feedback-msg error';
+            verifyMsg.style.display = 'block';
+          }
+          return;
+        }
+        btnVerifyAccess.disabled = true;
+        btnVerifyAccess.textContent = '验证中...';
+        try {
+          const ok = await this.authorize(key);
+          if (ok) {
+            if (verifyMsg) {
+              verifyMsg.textContent = '✅ 解锁成功！';
+              verifyMsg.className = 'verify-feedback-msg success';
+              verifyMsg.style.display = 'block';
+            }
+            setTimeout(() => {
+              this.render();
+              this.bindEvents();
+            }, 400);
+          } else {
+            btnVerifyAccess.disabled = false;
+            btnVerifyAccess.textContent = '验证解锁';
+            if (verifyMsg) {
+              verifyMsg.textContent = '❌ 密钥验证失败，请核对后重试';
+              verifyMsg.className = 'verify-feedback-msg error';
+              verifyMsg.style.display = 'block';
+            }
+          }
+        } catch (e: any) {
+          btnVerifyAccess.disabled = false;
+          btnVerifyAccess.textContent = '验证解锁';
+          if (verifyMsg) {
+            verifyMsg.textContent = `❌ 验证出错: ${e.message || '网络异常'}`;
+            verifyMsg.className = 'verify-feedback-msg error';
+            verifyMsg.style.display = 'block';
+          }
+        }
+      };
+      btnVerifyAccess.addEventListener?.('click', doVerify);
+      inputAccessKey.addEventListener?.('keydown', (e: any) => {
+        if (e.key === 'Enter') doVerify();
+      });
+    }
+
+    // 10. 联调设置面板交互
+    const btnTestConn = this.shadow.querySelector?.('.btn-test-connection') as any;
+    const inputSettingsApiBase = this.shadow.querySelector?.('.settings-api-base-input') as any;
+    const connResult = this.shadow.querySelector?.('.settings-conn-result') as any;
+    if (btnTestConn && inputSettingsApiBase) {
+      btnTestConn.addEventListener?.('click', async () => {
+        const url = (inputSettingsApiBase.value || '').trim().replace(/\/+$/, '');
+        btnTestConn.disabled = true;
+        btnTestConn.textContent = '测试中...';
+        if (connResult) {
+          connResult.style.display = 'block';
+          connResult.textContent = '正在发起服务连通性探测...';
+          connResult.className = 'settings-conn-result info';
+        }
+        const startTime = Date.now();
+        try {
+          const testEndpoint = url ? `${url}/api/__agent_feedback/list?limit=1` : this.getApiUrl('/api/__agent_feedback/list?limit=1');
+          const res = await fetch(testEndpoint, { method: 'GET' });
+          const latency = Date.now() - startTime;
+          if (res.ok) {
+            if (connResult) {
+              connResult.textContent = `✅ 连通良好！服务响应正常 (延迟: ${latency}ms)`;
+              connResult.className = 'settings-conn-result success';
+            }
+          } else {
+            if (connResult) {
+              connResult.textContent = `⚠️ 服务已响应，但返回状态码 HTTP ${res.status}`;
+              connResult.className = 'settings-conn-result warn';
+            }
+          }
+        } catch (e: any) {
+          if (connResult) {
+            connResult.textContent = `❌ 连接失败: ${e.message || '网络无法达'}`;
+            connResult.className = 'settings-conn-result error';
+          }
+        } finally {
+          btnTestConn.disabled = false;
+          btnTestConn.textContent = '🔌 测试连通性';
+        }
+      });
+    }
+
+    const btnSaveApiBase = this.shadow.querySelector?.('.btn-save-api-base');
+    if (btnSaveApiBase && inputSettingsApiBase) {
+      btnSaveApiBase.addEventListener?.('click', () => {
+        const url = (inputSettingsApiBase.value || '').trim().replace(/\/+$/, '');
+        setApiBase(url);
+        this.apiBase = url;
+        if (connResult) {
+          connResult.style.display = 'block';
+          connResult.textContent = '✅ API 基地址已更新并持久化至本地存储';
+          connResult.className = 'settings-conn-result success';
+        }
+        this.fetchHistoryQuickStatus();
+      });
+    }
+
+    const btnDeauth = this.shadow.querySelector?.('.btn-deauthorize');
+    if (btnDeauth) {
+      btnDeauth.addEventListener?.('click', () => {
+        this.deauthorize();
+      });
+    }
+
+    const btnVerifySettingsKey = this.shadow.querySelector?.('.btn-verify-settings-key') as any;
+    const inputSettingsKey = this.shadow.querySelector?.('.settings-access-key-input') as any;
+    const authResult = this.shadow.querySelector?.('.settings-auth-result') as any;
+    if (btnVerifySettingsKey && inputSettingsKey) {
+      const verifySettingsKey = async () => {
+        const key = (inputSettingsKey.value || '').trim();
+        if (!key) {
+          if (authResult) {
+            authResult.style.display = 'block';
+            authResult.textContent = '请输入配对密钥';
+            authResult.className = 'settings-auth-result error';
+          }
+          return;
+        }
+        btnVerifySettingsKey.disabled = true;
+        btnVerifySettingsKey.textContent = '验证中...';
+        try {
+          const ok = await this.authorize(key);
+          if (ok) {
+            if (authResult) {
+              authResult.style.display = 'block';
+              authResult.textContent = '✅ 授权成功！当前设备已绑定。';
+              authResult.className = 'settings-auth-result success';
+            }
+            setTimeout(() => {
+              this.render();
+              this.bindEvents();
+            }, 400);
+          } else {
+            btnVerifySettingsKey.disabled = false;
+            btnVerifySettingsKey.textContent = '🔐 验证并保存授权';
+            if (authResult) {
+              authResult.style.display = 'block';
+              authResult.textContent = '❌ 密钥验证失败，请核对后重试';
+              authResult.className = 'settings-auth-result error';
+            }
+          }
+        } catch (e: any) {
+          btnVerifySettingsKey.disabled = false;
+          btnVerifySettingsKey.textContent = '🔐 验证并保存授权';
+          if (authResult) {
+            authResult.style.display = 'block';
+            authResult.textContent = `❌ 验证出错: ${e.message || '网络异常'}`;
+            authResult.className = 'settings-auth-result error';
+          }
+        }
+      };
+      btnVerifySettingsKey.addEventListener?.('click', verifySettingsKey);
+      inputSettingsKey.addEventListener?.('keydown', (e: any) => {
+        if (e.key === 'Enter') verifySettingsKey();
+      });
+    }
   }
 
   /**
@@ -1789,10 +2300,29 @@ export class AgentFeedbackWidget extends CustomElementBase {
   public render() {
     if (!this.shadow) return;
 
+    const globalAC = getAccessControl();
+    if (globalAC && Object.keys(globalAC).length > 0) {
+      this.accessControlConfig = { ...this.accessControlConfig, ...globalAC };
+    }
+    const globalHC = getHostChannel();
+    if (globalHC && Object.keys(globalHC).length > 0) {
+      this.hostChannelConfig = { ...this.hostChannelConfig, ...globalHC };
+    }
+
     const telemetry = collectTelemetry();
     const logs = getRecentLogs();
     const extensions: FeedbackExtensionTab[] =
       typeof window !== 'undefined' ? (window as any).__AGENT_FEEDBACK_EXTENSIONS__ || [] : [];
+    const injectedOptions = typeof window !== 'undefined' ? (window as any).__AGENT_FEEDBACK_OPTIONS__ : undefined;
+    const hasSettings = !!(
+      this.accessControlConfig?.enabled ||
+      this.accessControlConfig?.accessKey ||
+      this.accessControlConfig?.keyHash ||
+      this.apiBase ||
+      getApiBase() ||
+      injectedOptions?.showSettings ||
+      this.getAttribute?.('show-settings') === 'true'
+    );
 
     const pillPositionStyle =
       this.currentLeft !== null && this.currentTop !== null
@@ -2666,6 +3196,312 @@ export class AgentFeedbackWidget extends CustomElementBase {
           width: 100%;
           min-height: 200px;
         }
+
+        /* 受限访问保护屏障 (Lockout Shield) */
+        .lockout-shield-container {
+          padding: 30px 16px;
+          text-align: center;
+          display: flex;
+          flex-direction: column;
+          align-items: center;
+          gap: 12px;
+        }
+
+        .lockout-shield-icon {
+          font-size: 42px;
+          margin-bottom: 2px;
+          filter: drop-shadow(0 0 12px rgba(78, 222, 163, 0.4));
+        }
+
+        .lockout-shield-title {
+          font-size: 16px;
+          font-weight: 700;
+          color: var(--af-text-main, #f3f4f6);
+        }
+
+        .lockout-shield-msg {
+          font-size: 13px;
+          line-height: 1.6;
+          color: var(--af-text-muted, #9ca3af);
+          max-width: 340px;
+          margin: 0 auto;
+        }
+
+        .lockout-host-action {
+          margin-top: 6px;
+          margin-bottom: 6px;
+          display: flex;
+          flex-direction: column;
+          align-items: center;
+          gap: 6px;
+        }
+
+        .btn-host-channel-primary {
+          display: inline-flex;
+          align-items: center;
+          justify-content: center;
+          gap: 8px;
+          padding: 10px 20px;
+          border-radius: 8px;
+          font-weight: 600;
+          font-size: 13px;
+          background: linear-gradient(135deg, rgba(78, 222, 163, 0.2), rgba(37, 99, 235, 0.2));
+          border: 1px solid var(--af-primary, #4edea3);
+          color: var(--af-text-main, #f3f4f6);
+          text-decoration: none;
+          box-shadow: 0 4px 14px rgba(0, 0, 0, 0.3);
+          transition: all 0.2s ease;
+        }
+
+        .btn-host-channel-primary:hover {
+          filter: brightness(1.15);
+          transform: translateY(-1px);
+        }
+
+        .host-channel-desc {
+          font-size: 11px;
+          color: var(--af-text-muted, #9ca3af);
+        }
+
+        .lockout-verify-box {
+          width: 100%;
+          max-width: 340px;
+          margin-top: 10px;
+          padding: 14px;
+          background: rgba(0, 0, 0, 0.25);
+          border: 1px solid var(--af-border, rgba(255, 255, 255, 0.08));
+          border-radius: 8px;
+        }
+
+        .verify-header {
+          font-size: 12px;
+          font-weight: 600;
+          color: var(--af-text-muted, #9ca3af);
+          margin-bottom: 8px;
+          text-align: left;
+        }
+
+        .verify-input-group {
+          display: flex;
+          gap: 8px;
+        }
+
+        .access-key-input {
+          flex: 1;
+          padding: 8px 10px;
+          border-radius: 6px;
+          background: var(--af-bg-surface, #181f2a);
+          border: 1px solid var(--af-border, rgba(255, 255, 255, 0.12));
+          color: var(--af-text-main, #f3f4f6);
+          font-size: 13px;
+          outline: none;
+        }
+
+        .access-key-input:focus {
+          border-color: var(--af-primary, #4edea3);
+        }
+
+        .btn-verify-access {
+          padding: 8px 14px;
+          border-radius: 6px;
+          background: var(--af-primary, #4edea3);
+          color: #0b0e14;
+          font-weight: 600;
+          font-size: 12px;
+          border: none;
+          cursor: pointer;
+          white-space: nowrap;
+        }
+
+        .btn-verify-access:hover:not(:disabled) {
+          filter: brightness(1.08);
+        }
+
+        .verify-feedback-msg {
+          font-size: 11px;
+          padding: 6px 8px;
+          border-radius: 4px;
+          margin-top: 8px;
+          text-align: left;
+        }
+
+        .verify-feedback-msg.success {
+          background: rgba(78, 222, 163, 0.15);
+          color: var(--af-primary, #4edea3);
+          border: 1px solid rgba(78, 222, 163, 0.3);
+        }
+
+        .verify-feedback-msg.error {
+          background: rgba(239, 68, 68, 0.15);
+          color: #f87171;
+          border: 1px solid rgba(239, 68, 68, 0.3);
+        }
+
+        /* 联调设置面板 (Settings) */
+        .settings-card {
+          background: var(--af-bg-surface, #181f2a);
+          border: 1px solid var(--af-border, rgba(255, 255, 255, 0.08));
+          border-radius: 10px;
+          padding: 14px;
+          margin-bottom: 14px;
+        }
+
+        .settings-card-header {
+          display: flex;
+          align-items: center;
+          gap: 8px;
+          margin-bottom: 6px;
+        }
+
+        .settings-card-icon {
+          font-size: 16px;
+        }
+
+        .settings-card-title {
+          font-size: 13px;
+          font-weight: 700;
+          color: var(--af-text-main, #f3f4f6);
+          flex: 1;
+        }
+
+        .settings-header-badge {
+          margin-left: auto;
+        }
+
+        .settings-card-desc {
+          font-size: 11px;
+          line-height: 1.5;
+          color: var(--af-text-muted, #9ca3af);
+          margin-bottom: 10px;
+        }
+
+        .settings-form-row {
+          margin-bottom: 10px;
+        }
+
+        .settings-api-base-input,
+        .settings-access-key-input {
+          width: 100%;
+          padding: 8px 10px;
+          border-radius: 6px;
+          background: var(--af-bg-base, #12151c);
+          border: 1px solid var(--af-border, rgba(255, 255, 255, 0.12));
+          color: var(--af-text-main, #f3f4f6);
+          font-size: 13px;
+          outline: none;
+        }
+
+        .settings-api-base-input:focus,
+        .settings-access-key-input:focus {
+          border-color: var(--af-primary, #4edea3);
+        }
+
+        .settings-btn-row {
+          display: flex;
+          gap: 8px;
+          flex-wrap: wrap;
+        }
+
+        .btn-primary {
+          background: var(--af-primary, #4edea3);
+          color: #0b0e14;
+          border: none;
+          padding: 7px 14px;
+          border-radius: 6px;
+          font-size: 12px;
+          font-weight: 600;
+          cursor: pointer;
+          display: inline-flex;
+          align-items: center;
+          justify-content: center;
+          gap: 6px;
+          transition: filter 0.15s ease;
+        }
+
+        .btn-primary:hover:not(:disabled) {
+          filter: brightness(1.08);
+        }
+
+        .btn-primary:disabled {
+          opacity: 0.6;
+          cursor: not-allowed;
+        }
+
+        .btn-test-connection,
+        .btn-deauthorize,
+        .btn-host-jump {
+          background: rgba(255, 255, 255, 0.08);
+          color: var(--af-text-main, #f3f4f6);
+          border: 1px solid var(--af-border, rgba(255, 255, 255, 0.15));
+          padding: 7px 12px;
+          border-radius: 6px;
+          font-size: 12px;
+          font-weight: 500;
+          cursor: pointer;
+          text-decoration: none;
+          display: inline-flex;
+          align-items: center;
+          justify-content: center;
+          transition: background 0.15s ease;
+        }
+
+        .btn-test-connection:hover,
+        .btn-deauthorize:hover,
+        .btn-host-jump:hover {
+          background: rgba(255, 255, 255, 0.14);
+        }
+
+        .settings-conn-result,
+        .settings-auth-result {
+          font-size: 11px;
+          padding: 6px 8px;
+          border-radius: 4px;
+          margin-top: 8px;
+        }
+
+        .settings-conn-result.success,
+        .settings-auth-result.success {
+          background: rgba(78, 222, 163, 0.15);
+          color: var(--af-primary, #4edea3);
+          border: 1px solid rgba(78, 222, 163, 0.3);
+        }
+
+        .settings-conn-result.error,
+        .settings-auth-result.error {
+          background: rgba(239, 68, 68, 0.15);
+          color: #f87171;
+          border: 1px solid rgba(239, 68, 68, 0.3);
+        }
+
+        .settings-conn-result.info {
+          background: rgba(59, 130, 246, 0.15);
+          color: #60a5fa;
+          border: 1px solid rgba(59, 130, 246, 0.3);
+        }
+
+        .settings-conn-result.warn {
+          background: rgba(245, 158, 11, 0.15);
+          color: #f59e0b;
+          border: 1px solid rgba(245, 158, 11, 0.3);
+        }
+
+        .settings-auth-status-box {
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          padding: 10px 12px;
+          background: var(--af-bg-base, #12151c);
+          border: 1px solid var(--af-border, rgba(255, 255, 255, 0.1));
+          border-radius: 6px;
+        }
+
+        .auth-status-info {
+          display: flex;
+          align-items: center;
+          gap: 6px;
+          font-size: 12px;
+          color: var(--af-text-main, #f3f4f6);
+        }
       </style>
 
       <!-- 悬浮触发胶囊 -->
@@ -2692,6 +3528,11 @@ export class AgentFeedbackWidget extends CustomElementBase {
             <button class="tab-btn tab-btn-history ${this.activeTab === 'history' ? 'active' : ''}">
               历史与进度 ${this.totalTicketsCount > 0 ? `(${this.totalTicketsCount})` : ''}
             </button>
+            ${
+              hasSettings
+                ? `<button class="tab-btn tab-btn-settings ${this.activeTab === 'settings' ? 'active' : ''}">⚙️ 联调设置</button>`
+                : ''
+            }
             ${extensions.map(ext => `
               <button class="tab-btn tab-btn-${ext.id} ${this.activeTab === ext.id ? 'active' : ''}">
                 ${ext.icon ? `<span>${ext.icon}</span>` : ''}
@@ -2705,94 +3546,129 @@ export class AgentFeedbackWidget extends CustomElementBase {
           <div class="modal-body">
             <!-- 1. 新建反馈面板 -->
             <div class="af-tab-panel af-tab-panel-submit" style="display: ${this.activeTab === 'submit' ? 'block' : 'none'};">
-              <!-- 遥测快照徽标预览 -->
-              <div class="telemetry-bar">
-                <div class="tele-chip">📍 <strong>${telemetry.route}</strong></div>
-                <div class="tele-chip">📱 <strong>${telemetry.viewport.width}×${telemetry.viewport.height}</strong> (DPR ${telemetry.viewport.dpr})</div>
-                <div class="tele-chip">💻 <strong>${telemetry.platform.toUpperCase()}</strong></div>
-                <div class="tele-chip">📝 <strong>${logs.length}</strong> 条日志</div>
-              </div>
-
               ${
-                this.submitFeedbackMessage
-                  ? `<div class="alert alert-${this.submitFeedbackMessage.type}">${this.submitFeedbackMessage.text}</div>`
-                  : ''
-              }
+                this.accessControlConfig?.enabled && !this.isAuthorized()
+                  ? `
+                <div class="lockout-shield-container">
+                  <div class="lockout-shield-icon">🛡️</div>
+                  <div class="lockout-shield-title">${this.accessControlConfig.promptTitle || '受限访问保护'}</div>
+                  <div class="lockout-shield-msg">${this.accessControlConfig.promptMessage || '此即时反馈通道仅对开发团队与受邀测试员开放。普通用户如遇问题或建议，欢迎前往宿主官方渠道反馈。'}</div>
 
-              <div class="form-group">
-                <label class="form-label">问题描述 / 优化建议</label>
-                <textarea
-                  class="feedback-textarea"
-                  placeholder="描述你在真机或浏览器中发现的问题、样式走位、交互异常或建议..."
-                >${this.feedbackContent}</textarea>
-              </div>
+                  ${
+                    this.hostChannelConfig?.url
+                      ? `
+                    <div class="lockout-host-action">
+                      <a href="${this.hostChannelConfig.url}" target="_blank" rel="noopener noreferrer" class="btn-host-channel-primary">
+                        <span>🚀</span>
+                        <span>前往 ${this.hostChannelConfig.name || '官方渠道'} 反馈 ↗</span>
+                      </a>
+                      ${this.hostChannelConfig.description ? `<div class="host-channel-desc">${this.hostChannelConfig.description}</div>` : ''}
+                    </div>
+                  `
+                      : ''
+                  }
 
-              <!-- 截图/录屏附件 (支持多张上传，最多 6 项) -->
-              <div class="screenshot-section">
-                <div class="screenshot-actions">
-                  <button class="btn-secondary btn-capture-screen" ${this.attachedScreenshots.length + this.attachedMedia.length >= 6 ? 'disabled' : ''}>
-                    📸 截取当前界面
-                  </button>
-                  <label class="btn-secondary ${this.attachedScreenshots.length + this.attachedMedia.length >= 6 ? 'disabled' : ''}" style="margin: 0; cursor: pointer;">
-                    📁 上传截图/录屏 ${this.attachedScreenshots.length + this.attachedMedia.length > 0 ? `(${this.attachedScreenshots.length + this.attachedMedia.length}/6)` : ''}
-                    <input
-                      type="file"
-                      accept="image/*,video/mp4,video/webm,video/quicktime"
-                      multiple
-                      class="screenshot-file-input"
-                      style="display: none;"
-                      ${this.attachedScreenshots.length + this.attachedMedia.length >= 6 ? 'disabled' : ''}
-                    />
-                  </label>
+                  <div class="lockout-verify-box">
+                    <div class="verify-header">🔐 开发者 / 测试员配对解锁</div>
+                    <div class="verify-input-group">
+                      <input type="password" class="access-key-input" placeholder="输入访问密钥 (Access Key)..." />
+                      <button type="button" class="btn-verify-access">验证解锁</button>
+                    </div>
+                    <div class="verify-feedback-msg" style="display: none;"></div>
+                  </div>
                 </div>
-                ${
-                  this.attachedMedia.length > 0
-                    ? `
-                  <div class="attached-media-list">
-                    ${this.attachedMedia
-                      .map(
-                        (media, idx) => `
-                      <div class="attached-media-card">
-                        <div class="media-icon-box">🎬</div>
-                        <div class="media-info-box">
-                          <div class="media-name">${media.filename}</div>
-                          <div class="media-sub">
-                            ${media.size ? `${(media.size / (1024 * 1024)).toFixed(1)} MB` : ''}
-                            ${media.isUploading ? `<span class="media-upload-tag" data-filename="${media.filename}">上传中 ${media.uploadProgress || 0}%</span>` : '<span class="media-ready-tag">已就绪</span>'}
-                          </div>
-                        </div>
-                        <button class="btn-remove-media" data-index="${idx}" title="移除此附件">✕</button>
-                      </div>
-                    `
-                      )
-                      .join('')}
-                  </div>
-                `
-                    : ''
-                }
-                ${
-                  this.attachedScreenshots.length > 0
-                    ? `
-                  <div class="screenshot-grid">
-                    ${this.attachedScreenshots
-                      .map(
-                        (shot, idx) => `
-                      <div class="screenshot-item">
-                        <img src="${shot}" class="screenshot-img" alt="截图预览 ${idx + 1}" title="点击查看大图" />
-                        <button class="btn-remove-shot" data-index="${idx}" title="移除此截图">✕</button>
-                      </div>
-                    `
-                      )
-                      .join('')}
-                  </div>
-                `
-                    : ''
-                }
-              </div>
+              `
+                  : `
+                <!-- 遥测快照徽标预览 -->
+                <div class="telemetry-bar">
+                  <div class="tele-chip">📍 <strong>${telemetry.route}</strong></div>
+                  <div class="tele-chip">📱 <strong>${telemetry.viewport.width}×${telemetry.viewport.height}</strong> (DPR ${telemetry.viewport.dpr})</div>
+                  <div class="tele-chip">💻 <strong>${telemetry.platform.toUpperCase()}</strong></div>
+                  <div class="tele-chip">📝 <strong>${logs.length}</strong> 条日志</div>
+                </div>
 
-              <button class="btn-submit" ${this.isSubmitting ? 'disabled' : ''}>
-                ${this.isSubmitting ? '正在提交...' : '🚀 提交并通知 AI Agent'}
-              </button>
+                ${
+                  this.submitFeedbackMessage
+                    ? `<div class="alert alert-${this.submitFeedbackMessage.type}">${this.submitFeedbackMessage.text}</div>`
+                    : ''
+                }
+
+                <div class="form-group">
+                  <label class="form-label">问题描述 / 优化建议</label>
+                  <textarea
+                    class="feedback-textarea"
+                    placeholder="描述你在真机或浏览器中发现的问题、样式走位、交互异常或建议..."
+                  >${this.feedbackContent}</textarea>
+                </div>
+
+                <!-- 截图/录屏附件 (支持多张上传，最多 6 项) -->
+                <div class="screenshot-section">
+                  <div class="screenshot-actions">
+                    <button class="btn-secondary btn-capture-screen" ${this.attachedScreenshots.length + this.attachedMedia.length >= 6 ? 'disabled' : ''}>
+                      📸 截取当前界面
+                    </button>
+                    <label class="btn-secondary ${this.attachedScreenshots.length + this.attachedMedia.length >= 6 ? 'disabled' : ''}" style="margin: 0; cursor: pointer;">
+                      📁 上传截图/录屏 ${this.attachedScreenshots.length + this.attachedMedia.length > 0 ? `(${this.attachedScreenshots.length + this.attachedMedia.length}/6)` : ''}
+                      <input
+                        type="file"
+                        accept="image/*,video/mp4,video/webm,video/quicktime"
+                        multiple
+                        class="screenshot-file-input"
+                        style="display: none;"
+                        ${this.attachedScreenshots.length + this.attachedMedia.length >= 6 ? 'disabled' : ''}
+                      />
+                    </label>
+                  </div>
+                  ${
+                    this.attachedMedia.length > 0
+                      ? `
+                    <div class="attached-media-list">
+                      ${this.attachedMedia
+                        .map(
+                          (media, idx) => `
+                        <div class="attached-media-card">
+                          <div class="media-icon-box">🎬</div>
+                          <div class="media-info-box">
+                            <div class="media-name">${media.filename}</div>
+                            <div class="media-sub">
+                              ${media.size ? `${(media.size / (1024 * 1024)).toFixed(1)} MB` : ''}
+                              ${media.isUploading ? `<span class="media-upload-tag" data-filename="${media.filename}">上传中 ${media.uploadProgress || 0}%</span>` : '<span class="media-ready-tag">已就绪</span>'}
+                            </div>
+                          </div>
+                          <button class="btn-remove-media" data-index="${idx}" title="移除此附件">✕</button>
+                        </div>
+                      `
+                        )
+                        .join('')}
+                    </div>
+                  `
+                      : ''
+                  }
+                  ${
+                    this.attachedScreenshots.length > 0
+                      ? `
+                    <div class="screenshot-grid">
+                      ${this.attachedScreenshots
+                        .map(
+                          (shot, idx) => `
+                        <div class="screenshot-item">
+                          <img src="${shot}" class="screenshot-img" alt="截图预览 ${idx + 1}" title="点击查看大图" />
+                          <button class="btn-remove-shot" data-index="${idx}" title="移除此截图">✕</button>
+                        </div>
+                      `
+                        )
+                        .join('')}
+                    </div>
+                  `
+                      : ''
+                  }
+                </div>
+
+                <button class="btn-submit" ${this.isSubmitting ? 'disabled' : ''}>
+                  ${this.isSubmitting ? '正在提交...' : '🚀 提交并通知 AI Agent'}
+                </button>
+              `
+              }
             </div>
 
             <!-- 2. 历史与进度面板 -->
@@ -2805,6 +3681,106 @@ export class AgentFeedbackWidget extends CustomElementBase {
                 ${this.renderTimelineView()}
               </div>
             </div>
+
+            <!-- 3. 联调设置面板 -->
+            ${
+              hasSettings
+                ? `
+              <div class="af-tab-panel af-tab-panel-settings" style="display: ${this.activeTab === 'settings' ? 'block' : 'none'};">
+                <!-- Settings Card 1: API 服务基地址 -->
+                <div class="settings-card">
+                  <div class="settings-card-header">
+                    <span class="settings-card-icon">🌐</span>
+                    <span class="settings-card-title">API 服务基地址 (内网穿透 / 调试地址)</span>
+                  </div>
+                  <div class="settings-card-desc">
+                    支持动态指定内网穿透公网域名 (如 cpolar / ngrok) 或局域网调试地址。修改后即时生效并持久化至本地存储。
+                  </div>
+                  <div class="settings-form-row">
+                    <input
+                      type="text"
+                      class="settings-api-base-input"
+                      value="${this.apiBase || ''}"
+                      placeholder="例如 https://xxx.cpolar.top 或 http://192.168.1.100:5173"
+                    />
+                  </div>
+                  <div class="settings-btn-row">
+                    <button type="button" class="btn-secondary btn-test-connection">🔌 测试连通性</button>
+                    <button type="button" class="btn-primary btn-save-api-base">💾 保存地址</button>
+                  </div>
+                  <div class="settings-conn-result" style="display: none;"></div>
+                </div>
+
+                <!-- Settings Card 2: 访问控制门禁与身份凭证 -->
+                <div class="settings-card">
+                  <div class="settings-card-header">
+                    <span class="settings-card-icon">🔐</span>
+                    <span class="settings-card-title">受限访问门禁与身份凭证</span>
+                    <div class="settings-header-badge">
+                      ${
+                        !this.accessControlConfig?.enabled
+                          ? '<span class="badge badge-notice"><span class="badge-dot"></span>未开启门禁</span>'
+                          : this.isAuthorized()
+                          ? '<span class="badge badge-completed"><span class="badge-dot"></span>已授权配对</span>'
+                          : '<span class="badge badge-rejected"><span class="badge-dot"></span>未授权 (受限)</span>'
+                      }
+                    </div>
+                  </div>
+                  <div class="settings-card-desc">
+                    控制移动端与外部环境的工单提交权限。未授权状态下禁止调用反馈递交接口。
+                  </div>
+                  ${
+                    this.isAuthorized()
+                      ? `
+                    <div class="settings-auth-status-box">
+                      <div class="auth-status-info">
+                        <span class="auth-icon">✅</span>
+                        <span class="auth-text">当前设备已授权 (凭证已加密保存)</span>
+                      </div>
+                      <button type="button" class="btn-secondary btn-deauthorize" style="color: #f87171;">🔓 解除授权</button>
+                    </div>
+                  `
+                      : `
+                    <div class="settings-form-row">
+                      <input
+                        type="password"
+                        class="settings-access-key-input"
+                        placeholder="输入配对密钥 (Access Key)..."
+                      />
+                    </div>
+                    <div class="settings-btn-row">
+                      <button type="button" class="btn-primary btn-verify-settings-key">🔐 验证并保存授权</button>
+                    </div>
+                    <div class="settings-auth-result" style="display: none;"></div>
+                  `
+                  }
+                </div>
+
+                <!-- Settings Card 3: 宿主官方反馈渠道 -->
+                ${
+                  this.hostChannelConfig?.url
+                    ? `
+                  <div class="settings-card">
+                    <div class="settings-card-header">
+                      <span class="settings-card-icon">🚀</span>
+                      <span class="settings-card-title">${this.hostChannelConfig.name || '宿主官方反馈渠道'}</span>
+                    </div>
+                    <div class="settings-card-desc">
+                      ${this.hostChannelConfig.description || '前往宿主官方工单平台提出建议、缺陷反馈与特性诉求。'}
+                    </div>
+                    <div class="settings-btn-row">
+                      <a href="${this.hostChannelConfig.url}" target="_blank" rel="noopener noreferrer" class="btn-secondary btn-host-jump">
+                        访问 ${this.hostChannelConfig.name || '官方渠道'} ↗
+                      </a>
+                    </div>
+                  </div>
+                `
+                    : ''
+                }
+              </div>
+            `
+                : ''
+            }
 
             <!-- 3. 自定义扩展 Tab 面板 -->
             ${extensions.map(ext => `
@@ -2861,9 +3837,12 @@ export function autoMountWidget(): void {
   registerAgentFeedbackWidget();
 
   const mount = () => {
-    if (!document.querySelector('agent-feedback-widget')) {
-      const widget = document.createElement('agent-feedback-widget');
+    let widget = document.querySelector('agent-feedback-widget') as any;
+    if (!widget) {
+      widget = document.createElement('agent-feedback-widget');
       document.body.appendChild(widget);
+    } else if (typeof widget.refreshWidget === 'function') {
+      widget.refreshWidget();
     }
   };
 

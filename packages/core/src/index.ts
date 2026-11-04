@@ -113,6 +113,27 @@ export interface ExtensionContext {
 }
 
 /**
+ * 访问控制与端侧授权配置
+ */
+export interface AccessControlConfig {
+  enabled?: boolean;
+  accessKey?: string;
+  keyHash?: string; // SHA-256 哈希值匹配
+  storageKey?: string; // 默认 'af_access_key'
+  promptTitle?: string;
+  promptMessage?: string;
+}
+
+/**
+ * 宿主官方反馈与工单渠道配置
+ */
+export interface HostChannelConfig {
+  name?: string; // 如 "GitHub Issues"
+  url?: string; // 宿主反馈链接
+  description?: string;
+}
+
+/**
  * 模态框自定义扩展 Tab 定义
  */
 export interface FeedbackExtensionTab {

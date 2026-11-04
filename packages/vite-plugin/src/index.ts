@@ -14,7 +14,9 @@ import {
   type FeedbackDateIndex,
   type FeedbackStatus,
   type FeedbackType,
-  type FeedbackTheme
+  type FeedbackTheme,
+  type AccessControlConfig,
+  type HostChannelConfig
 } from '@lylyuanliang/agent-feedback-core';
 
 /**
@@ -368,6 +370,16 @@ export interface AgentFeedbackPluginOptions {
    * 支持传入 boolean (true 开启默认 webhook 模式) 或配置对象
    */
   sentinel?: SentinelPluginOptions | boolean;
+
+  /**
+   * 访问控制与端侧授权配置 (公测与安全防线门禁)
+   */
+  accessControl?: AccessControlConfig;
+
+  /**
+   * 宿主官方反馈与工单渠道配置
+   */
+  hostChannel?: HostChannelConfig;
 }
 
 /**
@@ -977,14 +989,24 @@ export function agentFeedback(options: AgentFeedbackPluginOptions = {}): AgentFe
         const themeLiteral = JSON.stringify(defaultTheme);
         const colorLiteral = primaryColor ? JSON.stringify(primaryColor) : 'undefined';
         const apiBaseLiteral = options.apiBase ? JSON.stringify(options.apiBase.trim().replace(/\/+$/, '')) : 'undefined';
+        const accessControlLiteral = options.accessControl ? JSON.stringify(options.accessControl) : 'undefined';
+        const hostChannelLiteral = options.hostChannel ? JSON.stringify(options.hostChannel) : 'undefined';
         // 输出虚拟客户端代码，驱动 Shadow DOM 自定义元素注册、主题透传与挂载
         return `
 if (typeof window !== 'undefined') {
   window.__AGENT_FEEDBACK_OPTIONS__ = {
     theme: ${themeLiteral},
     primaryColor: ${colorLiteral},
-    apiBase: ${apiBaseLiteral}
+    apiBase: ${apiBaseLiteral},
+    accessControl: ${accessControlLiteral},
+    hostChannel: ${hostChannelLiteral}
   };
+  if (typeof document !== 'undefined') {
+    const w = document.querySelector('agent-feedback-widget');
+    if (w && typeof w.refreshWidget === 'function') {
+      w.refreshWidget();
+    }
+  }
 }
 import '@lylyuanliang/agent-feedback-client';
 console.log('[Agent Feedback Bridge] In-App nervous system initialized.');

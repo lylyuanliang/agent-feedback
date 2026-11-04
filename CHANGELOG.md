@@ -4,6 +4,39 @@
 
 ---
 
+## [1.3.0] - 2026-11-04
+
+### 🚀 重大核心特性 (Key Highlights)
+
+- **原生受限访问安全门禁 (Access Control & Security Gatekeeper)**
+  - `@agent-feedback/core` 新增 `AccessControlConfig` 与 `HostChannelConfig` 契约，支持受限访问启用、明文密钥配对、SHA-256 安全哈希比对与自定义宿主外链；
+  - `@agent-feedback/client` 实现本地授权认证引擎与 `localStorage` 凭据持久化（默认 key 为 `af_access_key`，支持自定义 `storageKey`）；
+  - 新建反馈面板原生受限保护屏障（Lockout Shield）：未授权时拦截工单提交，提示普通用户前往宿主渠道（如 GitHub Issues）提交反馈，并提供密钥输入与“验证解锁”交互；
+  - 导出 `setAccessControl`, `getAccessControl`, `setHostChannel`, `getHostChannel`, `isAuthorized`, `authorize`, `deauthorize` 等完整公共方法。
+
+- **原生内置「⚙️ 联调设置」面板与连通性测试 (In-App Settings & Connectivity Probe)**
+  - 客户端选项卡新增原生「⚙️ 联调设置」(Settings Tab)；
+  - 支持移动端真机及公测环境下动态配置与持久化 API 基地址（`localStorage: af_api_base`），并提供一键「测试连通性」探针；
+  - 支持开发者输入配对密钥进行实时验证、展示授权状态徽标并提供「解除授权」；
+  - 内置展示宿主官方渠道快速跳转卡片。
+
+- **Vite 插件原生透传 (Vite Plugin Options Passthrough)**
+  - `@agent-feedback/vite-plugin` 的 `agentFeedback` 插件选项新增 `accessControl` 与 `hostChannel`，并在运行时虚拟模块（`window.__AGENT_FEEDBACK_OPTIONS__`）中自动序列化透传至客户端。
+
+---
+
+## [1.2.0] - 2026-11-03
+
+### 🚀 重大核心特性 (Key Highlights)
+
+- **独立分块媒体流式上传 (Multipart Binary Media Storage)**
+  - 客户端支持视频录屏文件（`mp4`, `webm`, `quicktime`）选择与 1MB 物理分块二进制流式切片上传（`uploadMediaInChunks`）；
+  - 服务端独立 `media/` 存储、分块临时暂存合并（`POST /api/__agent_feedback/media/chunk`）与单文件上传（`POST /api/__agent_feedback/media/upload`）；
+  - 服务端媒体接口支持 HTTP 206 Partial Content (Range: bytes=...) 切片传输，支持移动端 WebView 原生流畅播放与拖拽 Seek；
+  - 历史时间轴与全屏 Lightbox 内嵌高山暗曜石风格原生 `<video>` 播放器。
+
+---
+
 ## [1.1.0] - 2026-10-30
 
 ### 🚀 重大核心特性 (Key Highlights)

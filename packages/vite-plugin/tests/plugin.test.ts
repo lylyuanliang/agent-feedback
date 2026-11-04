@@ -612,6 +612,32 @@ describe('@agent-feedback/vite-plugin Sharded Persistence & Upgraded API Middlew
     assert.ok(code.includes('theme: "light"'));
     assert.ok(code.includes('primaryColor: "#2563eb"'));
   });
+
+  it('should pass accessControl and hostChannel options to virtual client module', () => {
+    const plugin = agentFeedback({
+      theme: 'dark',
+      accessControl: {
+        enabled: true,
+        accessKey: 'test-pairing-key',
+        keyHash: 'afa27b44d43b02a9fea41d13cedc2e4016cfcf87c5dbf990e593669aa8ce286d',
+        storageKey: 'custom_af_key',
+        promptTitle: '受限访问保护',
+        promptMessage: '此通道仅限开发者使用'
+      },
+      hostChannel: {
+        name: 'GitHub Issues',
+        url: 'https://github.com/example/repo/issues',
+        description: '建议前往 GitHub 提交 Issue'
+      }
+    });
+
+    const code = plugin.load?.('\0agent-feedback-client-virtual');
+    assert.ok(code, 'virtual module code should exist');
+    assert.ok(code.includes('custom_af_key'), 'custom storageKey should be serialized in options');
+    assert.ok(code.includes('test-pairing-key'), 'accessKey should be serialized');
+    assert.ok(code.includes('GitHub Issues'), 'hostChannel name should be serialized');
+    assert.ok(code.includes('https://github.com/example/repo/issues'), 'hostChannel url should be serialized');
+  });
 });
 
 describe('@agent-feedback/vite-plugin - Sentinel Auto Lifecycle & New Project Integration', () => {

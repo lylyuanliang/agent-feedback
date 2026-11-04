@@ -16,7 +16,9 @@ import {
   type FeedbackDateIndex,
   type ExtensionContext,
   type FeedbackExtensionTab,
-  type FeedbackTheme
+  type FeedbackTheme,
+  type AccessControlConfig,
+  type HostChannelConfig
 } from '../src/index.ts';
 
 describe('@agent-feedback/core protocol & schema', () => {
@@ -213,7 +215,42 @@ describe('@agent-feedback/core protocol & schema', () => {
     assert.strictEqual(isVideoMedia('media/screenshot.png'), false);
     assert.strictEqual(isVideoMedia('media/photo.jpg'), false);
     assert.strictEqual(isVideoMedia(''), false);
+  });
 
+  it('should support AccessControlConfig schema and default values', () => {
+    const fullConfig: AccessControlConfig = {
+      enabled: true,
+      accessKey: 'af-secret-pass',
+      keyHash: 'a665a45920422f9d417e4867efdc4fb8a04a1f3fff1fa07e998e86f7f7a27ae3',
+      storageKey: 'custom_access_key',
+      promptTitle: '受限访问保护',
+      promptMessage: '此通道仅对开发者与受邀测试员开放'
+    };
+
+    assert.strictEqual(fullConfig.enabled, true);
+    assert.strictEqual(fullConfig.accessKey, 'af-secret-pass');
+    assert.strictEqual(fullConfig.keyHash, 'a665a45920422f9d417e4867efdc4fb8a04a1f3fff1fa07e998e86f7f7a27ae3');
+    assert.strictEqual(fullConfig.storageKey, 'custom_access_key');
+    assert.strictEqual(fullConfig.promptTitle, '受限访问保护');
+    assert.strictEqual(fullConfig.promptMessage, '此通道仅对开发者与受邀测试员开放');
+
+    const minimalConfig: AccessControlConfig = {
+      enabled: false
+    };
+    assert.strictEqual(minimalConfig.enabled, false);
+    assert.strictEqual(minimalConfig.accessKey, undefined);
+  });
+
+  it('should support HostChannelConfig schema', () => {
+    const hostChannel: HostChannelConfig = {
+      name: 'GitHub Issues',
+      url: 'https://github.com/my-org/my-repo/issues',
+      description: '前往宿主官方渠道提交工单与缺陷反馈'
+    };
+
+    assert.strictEqual(hostChannel.name, 'GitHub Issues');
+    assert.strictEqual(hostChannel.url, 'https://github.com/my-org/my-repo/issues');
+    assert.strictEqual(hostChannel.description, '前往宿主官方渠道提交工单与缺陷反馈');
   });
 });
 

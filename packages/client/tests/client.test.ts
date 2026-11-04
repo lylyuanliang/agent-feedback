@@ -144,6 +144,25 @@ Object.defineProperty(globalThis, 'navigator', {
   addEventListener: () => {}
 };
 
+// 模拟 localStorage
+class MockStorage {
+  private store: Map<string, string> = new Map();
+  getItem(key: string): string | null {
+    return this.store.get(key) ?? null;
+  }
+  setItem(key: string, value: string): void {
+    this.store.set(key, String(value));
+  }
+  removeItem(key: string): void {
+    this.store.delete(key);
+  }
+  clear(): void {
+    this.store.clear();
+  }
+}
+const mockLocalStorage = new MockStorage();
+(globalThis as any).localStorage = mockLocalStorage;
+
 // 模拟原生 fetch (解决 Node 下相对 URL 抛出 ERR_INVALID_URL)
 (globalThis as any).fetch = async (url: string, init?: any) => {
   return {
@@ -168,7 +187,17 @@ const {
   AgentFeedbackWidget,
   registerAgentFeedbackWidget,
   autoMountWidget,
-  registerExtensionTab
+  registerExtensionTab,
+  setAccessControl,
+  getAccessControl,
+  setHostChannel,
+  getHostChannel,
+  isAuthorized,
+  authorize,
+  deauthorize,
+  computeSha256,
+  setApiBase,
+  getApiBase
 } = await import('../src/index.ts');
 
 describe('@agent-feedback/client Full-Spectrum Telemetry Engine', () => {
@@ -749,5 +778,197 @@ describe('@agent-feedback/client <agent-feedback-widget> Web Component', () => {
     assert.ok(html.includes('af-lightbox-video'), 'Should render af-lightbox-video tag');
     assert.ok(html.includes('<video'), 'Should be <video> tag');
     assert.ok(!html.includes('<img src='), 'Should NOT render <img> for video');
+  });
+});
+
+describe('@agent-feedback/client Access Control & Settings Management', () => {
+  beforeEach(() => {
+    mockLocalStorage.clear();
+    setAccessControl({ enabled: false });
+    setHostChannel({});
+    setApiBase('');
+  });
+
+  afterEach(() => {
+    mockLocalStorage.clear();
+    setAccessControl({ enabled: false });
+    setHostChannel({});
+    setApiBase('');
+  });
+
+  it('should manage AccessControlConfig and HostChannelConfig globally', () => {
+    setAccessControl({
+      enabled: true,
+      accessKey: 'dummy-test-key',
+      storageKey: 'custom_af_key',
+      promptTitle: '受限访问保护测试',
+      promptMessage: '此通道仅对受邀测试员开放'
+    });
+
+    const ac = getAccessControl();
+    assert.strictEqual(ac.enabled, true);
+    assert.strictEqual(ac.accessKey, 'dummy-test-key');
+    assert.strictEqual(ac.storageKey, 'custom_af_key');
+    assert.strictEqual(ac.promptTitle, '受限访问保护测试');
+
+    setHostChannel({
+      name: 'GitHub Issues',
+      url: 'https://github.com/my-org/my-project/issues',
+      description: '请前往宿主仓库提交 Issues'
+    });
+
+    const hc = getHostChannel();
+    assert.strictEqual(hc.name, 'GitHub Issues');
+    assert.strictEqual(hc.url, 'https://github.com/my-org/my-project/issues');
+  });
+
+  it('should accurately compute SHA-256 hash using Web Crypto API', async () => {
+    const hash = await computeSha256('hello-world');
+    assert.strictEqual(hash, 'afa27b44d43b02a9fea41d13cedc2e4016cfcf87c5dbf990e593669aa8ce286d');
+  });
+
+  it('should enforce access control with plaintext accessKey and localStorage persistence', async () => {
+    setAccessControl({
+      enabled: true,
+      accessKey: 'secret-pairing-key',
+      storageKey: 'af_access_key'
+    });
+
+    // 默认未授权
+    assert.strictEqual(isAuthorized(), false);
+
+    // 错误密钥授权失败
+    const failRes = await authorize('invalid-wrong-key');
+    assert.strictEqual(failRes, false);
+    assert.strictEqual(isAuthorized(), false);
+    assert.strictEqual(mockLocalStorage.getItem('af_access_key'), null);
+
+    // 正确密钥授权成功并持久化
+    const okRes = await authorize('secret-pairing-key');
+    assert.strictEqual(okRes, true);
+    assert.strictEqual(isAuthorized(), true);
+    assert.strictEqual(mockLocalStorage.getItem('af_access_key'), 'secret-pairing-key');
+
+    // 解除授权
+    deauthorize();
+    assert.strictEqual(isAuthorized(), false);
+    assert.strictEqual(mockLocalStorage.getItem('af_access_key'), null);
+  });
+
+  it('should enforce access control with SHA-256 keyHash', async () => {
+    const rawKey = 'dev-test-pass-2026';
+    const expectedHash = await computeSha256(rawKey);
+
+    setAccessControl({
+      enabled: true,
+      keyHash: expectedHash,
+      storageKey: 'af_access_key'
+    });
+
+    assert.strictEqual(isAuthorized(), false);
+
+    const fail = await authorize('wrong-pass');
+    assert.strictEqual(fail, false);
+    assert.strictEqual(isAuthorized(), false);
+
+    const ok = await authorize(rawKey);
+    assert.strictEqual(ok, true);
+    assert.strictEqual(isAuthorized(), true);
+
+    deauthorize();
+    assert.strictEqual(isAuthorized(), false);
+  });
+
+  it('should display Lockout Shield and block submission when access control is enabled and unauthorized', async () => {
+    setAccessControl({
+      enabled: true,
+      accessKey: 'shield-pass',
+      promptTitle: '开发者通道受限保护',
+      promptMessage: '此工单通道仅对内部测试员开放'
+    });
+    setHostChannel({
+      name: '官方论坛',
+      url: 'https://community.example.com',
+      description: '欢迎在官方论坛交流'
+    });
+
+    const widget = new AgentFeedbackWidget();
+    widget.connectedCallback();
+    widget.render();
+
+    const html = widget.shadow.innerHTML;
+    // 校验受限保护屏障 DOM 结构
+    assert.ok(html.includes('lockout-shield-container'), 'Should render lockout shield container');
+    assert.ok(html.includes('开发者通道受限保护'), 'Should display custom promptTitle');
+    assert.ok(html.includes('此工单通道仅对内部测试员开放'), 'Should display custom promptMessage');
+    assert.ok(html.includes('前往 官方论坛 反馈'), 'Should render host channel action button');
+    assert.ok(html.includes('https://community.example.com'), 'Should link to host channel URL');
+    assert.ok(html.includes('access-key-input'), 'Should provide access key input');
+    assert.ok(html.includes('btn-verify-access'), 'Should provide verify button');
+    assert.ok(!html.includes('<textarea'), 'Should NOT render feedback textarea when locked out');
+
+    // 尝试调用 submitFeedback
+    (widget as any).feedbackContent = '尝试未授权提交';
+    let fetchCalled = false;
+    const origFetch = (globalThis as any).fetch;
+    (globalThis as any).fetch = async () => {
+      fetchCalled = true;
+      return { ok: true, json: async () => ({ success: true }) };
+    };
+
+    await widget.submitFeedback();
+    assert.strictEqual(fetchCalled, false, 'Fetch must NOT be called when unauthorized');
+    assert.ok((widget as any).submitFeedbackMessage?.text.includes('受限访问保护'), 'Should set error message blocking submission');
+
+    (globalThis as any).fetch = origFetch;
+  });
+
+  it('should unlock and render feedback form when valid key is authorized on widget', async () => {
+    setAccessControl({
+      enabled: true,
+      accessKey: 'unlock-me-now'
+    });
+
+    const widget = new AgentFeedbackWidget();
+    widget.connectedCallback();
+    widget.render();
+
+    assert.strictEqual(widget.isAuthorized(), false);
+    assert.ok(widget.shadow.innerHTML.includes('class="lockout-shield-container"'));
+
+    const authorized = await widget.authorize('unlock-me-now');
+    assert.strictEqual(authorized, true);
+    assert.strictEqual(widget.isAuthorized(), true);
+
+    widget.render();
+    const unlockedHtml = widget.shadow.innerHTML;
+    assert.ok(!unlockedHtml.includes('class="lockout-shield-container"'), 'Lockout shield should be gone');
+    assert.ok(unlockedHtml.includes('<textarea'), 'Feedback textarea should now be rendered');
+    assert.ok(unlockedHtml.includes('btn-submit'), 'Submit button should now be rendered');
+  });
+
+  it('should render Settings tab and support API base configuration and persistence', () => {
+    setAccessControl({ enabled: true, accessKey: 'settings-key' });
+    setApiBase('https://tunnel.cpolar.top');
+
+    const widget = new AgentFeedbackWidget();
+    widget.connectedCallback();
+    widget.render();
+
+    const html = widget.shadow.innerHTML;
+    assert.ok(html.includes('tab-btn-settings'), 'Should display Settings tab button');
+
+    // 切换至设置面板
+    widget.setTab('settings');
+    const settingsHtml = widget.shadow.innerHTML;
+    assert.ok(settingsHtml.includes('af-tab-panel-settings'), 'Should render Settings tab panel');
+    assert.ok(settingsHtml.includes('settings-api-base-input'), 'Should render API base input');
+    assert.ok(settingsHtml.includes('btn-test-connection'), 'Should render test connection button');
+    assert.ok(settingsHtml.includes('btn-save-api-base'), 'Should render save API base button');
+
+    // 测试持久化
+    setApiBase('https://new-tunnel.cpolar.top');
+    assert.strictEqual(getApiBase(), 'https://new-tunnel.cpolar.top');
+    assert.strictEqual(mockLocalStorage.getItem('af_api_base'), 'https://new-tunnel.cpolar.top');
   });
 });
