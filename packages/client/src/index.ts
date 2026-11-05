@@ -135,6 +135,54 @@ export function getApiBase(): string {
 }
 
 /**
+ * 获取端侧鉴权请求头 (支持 Authorization / X-Access-Key / X-Access-Hash)
+ */
+export function getAuthHeaders(customConfig?: AccessControlConfig): Record<string, string> {
+  const config = customConfig || getAccessControl();
+  const storageKey = config.storageKey || 'af_access_key';
+  let storedKey = '';
+  let verifiedHash = '';
+  try {
+    if (typeof localStorage !== 'undefined') {
+      storedKey = localStorage.getItem(storageKey) || '';
+      verifiedHash = localStorage.getItem(storageKey + '_verified_hash') || '';
+    }
+  } catch {}
+  const headers: Record<string, string> = {};
+  if (storedKey) {
+    headers['Authorization'] = `Bearer ${storedKey}`;
+    headers['X-Access-Key'] = storedKey;
+  }
+  if (verifiedHash) {
+    headers['X-Access-Hash'] = verifiedHash;
+  }
+  return headers;
+}
+
+/**
+ * 从远程 API 服务端动态拉取并同步访问控制门禁配置
+ */
+export async function syncAccessControlFromServer(baseUrl?: string): Promise<AccessControlConfig | null> {
+  if (typeof fetch === 'undefined') return null;
+  const base = (baseUrl || getApiBase() || '').trim().replace(/\/+$/, '');
+  if (!base) return null;
+  try {
+    const res = await fetch(`${base}/api/__agent_feedback/auth/config`);
+    if (res.ok) {
+      const data = await res.json();
+      if (data && data.accessControl) {
+        setAccessControl(data.accessControl);
+        if (data.hostChannel) {
+          setHostChannel(data.hostChannel);
+        }
+        return data.accessControl;
+      }
+    }
+  } catch {}
+  return null;
+}
+
+/**
  * 设置访问控制与端侧授权配置
  */
 export function setAccessControl(config: AccessControlConfig): void {
@@ -286,6 +334,34 @@ export async function authorize(key: string, customConfig?: AccessControlConfig)
     }
   } else if (!config.accessKey && !config.keyHash) {
     isValid = true;
+  }
+
+  // 若本地比对未通过，且配置了远程开发机基地址，则向开发机发起动态鉴权
+  if (!isValid) {
+    const apiBase = getApiBase();
+    if (apiBase) {
+      try {
+        const verifyUrl = `${apiBase.replace(/\/+$/, '')}/api/__agent_feedback/auth/verify`;
+        const res = await fetch(verifyUrl, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ key: cleanKey })
+        });
+        if (res.ok) {
+          const data = await res.json();
+          if (data && data.success && data.verified) {
+            isValid = true;
+            if (data.keyHash) {
+              computedHash = data.keyHash;
+              setAccessControl({
+                ...config,
+                keyHash: data.keyHash
+              });
+            }
+          }
+        }
+      } catch {}
+    }
   }
 
   if (isValid) {
@@ -639,7 +715,8 @@ export async function uploadMediaInChunks(
         'X-Chunk-Index': String(i),
         'X-Total-Chunks': String(totalChunks),
         'X-File-Name': encodeURIComponent(fileName),
-        'Content-Type': 'application/octet-stream'
+        'Content-Type': 'application/octet-stream',
+        ...getAuthHeaders()
       },
       body: chunkBlob
     });
@@ -891,7 +968,18 @@ export class AgentFeedbackWidget extends CustomElementBase {
 
   public setApiBase(url: string) {
     this.apiBase = (url || '').trim().replace(/\/+$/, '');
+    syncAccessControlFromServer(this.apiBase).then(cfg => {
+      if (cfg) {
+        this.accessControlConfig = { ...getAccessControl() };
+        this.render();
+        this.bindEvents();
+      }
+    });
     this.fetchHistoryQuickStatus();
+  }
+
+  public getAuthHeaders(): Record<string, string> {
+    return getAuthHeaders(this.accessControlConfig);
   }
 
   public getApiUrl(endpoint: string): string {
@@ -1069,10 +1157,13 @@ export class AgentFeedbackWidget extends CustomElementBase {
   private async pollHistoryUpdates() {
     if (typeof fetch === 'undefined' || typeof document !== 'undefined' && document.hidden) return;
     if (!this.isOpen || this.activeTab !== 'history') return;
+    if (this.accessControlConfig?.enabled && !this.isAuthorized()) return;
 
     try {
       const query = this.datesList.length > 0 ? `?date=${encodeURIComponent(this.datesList[0])}` : '';
-      const res = await fetch(this.getApiUrl(`/api/__agent_feedback/list${query}`));
+      const res = await fetch(this.getApiUrl(`/api/__agent_feedback/list${query}`), {
+        headers: this.getAuthHeaders()
+      });
       if (!res.ok) return;
 
       const latestList: InAppFeedback[] = await res.json();
@@ -1117,8 +1208,11 @@ export class AgentFeedbackWidget extends CustomElementBase {
    */
   private async fetchHistoryQuickStatus() {
     if (typeof fetch === 'undefined') return;
+    if (this.accessControlConfig?.enabled && !this.isAuthorized()) return;
     try {
-      const res = await fetch(this.getApiUrl('/api/__agent_feedback/list'));
+      const res = await fetch(this.getApiUrl('/api/__agent_feedback/list'), {
+        headers: this.getAuthHeaders()
+      });
       if (res.ok) {
         const data = await res.json();
         const list: InAppFeedback[] = Array.isArray(data) ? data : data.list || [];
@@ -1319,6 +1413,14 @@ export class AgentFeedbackWidget extends CustomElementBase {
    */
   public async loadHistory(silent: boolean = false) {
     if (typeof fetch === 'undefined') return;
+    if (this.accessControlConfig?.enabled && !this.isAuthorized()) {
+      this.isLoadingHistory = false;
+      this.historyList = [];
+      this.datesList = [];
+      this.totalTicketsCount = 0;
+      this.updateHistoryDom();
+      return;
+    }
     if (!silent || this.loadedDates.size === 0) {
       this.isLoadingHistory = true;
       this.updateHistoryDom();
@@ -1327,8 +1429,8 @@ export class AgentFeedbackWidget extends CustomElementBase {
     try {
       // 并发请求日级索引与首屏最新分片，大幅减少穿透网络往返延迟
       const [datesRes, listRes] = await Promise.all([
-        fetch(this.getApiUrl('/api/__agent_feedback/dates')).catch(() => null),
-        fetch(this.getApiUrl('/api/__agent_feedback/list')).catch(() => null)
+        fetch(this.getApiUrl('/api/__agent_feedback/dates'), { headers: this.getAuthHeaders() }).catch(() => null),
+        fetch(this.getApiUrl('/api/__agent_feedback/list'), { headers: this.getAuthHeaders() }).catch(() => null)
       ]);
 
       if (datesRes && datesRes.ok) {
@@ -1373,6 +1475,7 @@ export class AgentFeedbackWidget extends CustomElementBase {
    */
   public async loadPreviousDay() {
     if (typeof fetch === 'undefined') return;
+    if (this.accessControlConfig?.enabled && !this.isAuthorized()) return;
     if (this.currentDateIndex + 1 >= this.datesList.length) return;
 
     this.currentDateIndex++;
@@ -1383,7 +1486,9 @@ export class AgentFeedbackWidget extends CustomElementBase {
     const prevScrollTop = bodyEl ? bodyEl.scrollTop : 0;
 
     try {
-      const res = await fetch(this.getApiUrl(`/api/__agent_feedback/list?date=${encodeURIComponent(prevDate)}`));
+      const res = await fetch(this.getApiUrl(`/api/__agent_feedback/list?date=${encodeURIComponent(prevDate)}`), {
+        headers: this.getAuthHeaders()
+      });
       if (res.ok) {
         const list: InAppFeedback[] = await res.json();
         if (Array.isArray(list)) {
@@ -1461,7 +1566,10 @@ export class AgentFeedbackWidget extends CustomElementBase {
 
       const res = await fetch(this.getApiUrl('/api/__agent_feedback/submit'), {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          ...this.getAuthHeaders()
+        },
         body: JSON.stringify(payload)
       });
 
@@ -1920,6 +2028,13 @@ export class AgentFeedbackWidget extends CustomElementBase {
     }
 
     // 9. 受限访问门禁验证 (Lockout Shield)
+    const jumpBtns = this.shadow.querySelectorAll?.('.btn-jump-to-settings');
+    jumpBtns?.forEach((btn: any) => {
+      btn.addEventListener?.('click', () => {
+        this.setTab('settings');
+      });
+    });
+
     const btnVerifyAccess = this.shadow.querySelector?.('.btn-verify-access') as any;
     const inputAccessKey = this.shadow.querySelector?.('.access-key-input') as any;
     const verifyMsg = this.shadow.querySelector?.('.verify-feedback-msg') as any;
@@ -1989,10 +2104,17 @@ export class AgentFeedbackWidget extends CustomElementBase {
         }
         const startTime = Date.now();
         try {
-          const testEndpoint = url ? `${url}/api/__agent_feedback/list?limit=1` : this.getApiUrl('/api/__agent_feedback/list?limit=1');
+          const testEndpoint = url ? `${url}/api/__agent_feedback/auth/config` : this.getApiUrl('/api/__agent_feedback/auth/config');
           const res = await fetch(testEndpoint, { method: 'GET' });
           const latency = Date.now() - startTime;
           if (res.ok) {
+            try {
+              const authData = await res.json();
+              if (authData?.accessControl) {
+                setAccessControl(authData.accessControl);
+                this.accessControlConfig = { ...getAccessControl() };
+              }
+            } catch {}
             if (connResult) {
               connResult.textContent = `✅ 连通良好！服务响应正常 (延迟: ${latency}ms)`;
               connResult.className = 'settings-conn-result success';
@@ -2026,6 +2148,13 @@ export class AgentFeedbackWidget extends CustomElementBase {
           connResult.textContent = '✅ API 基地址已更新并持久化至本地存储';
           connResult.className = 'settings-conn-result success';
         }
+        syncAccessControlFromServer(url).then(cfg => {
+          if (cfg) {
+            this.accessControlConfig = { ...getAccessControl() };
+            this.render();
+            this.bindEvents();
+          }
+        });
         this.fetchHistoryQuickStatus();
       });
     }
@@ -3673,13 +3802,28 @@ export class AgentFeedbackWidget extends CustomElementBase {
 
             <!-- 2. 历史与进度面板 -->
             <div class="af-tab-panel af-tab-panel-history" style="display: ${this.activeTab === 'history' ? 'block' : 'none'};">
-              <div class="history-controls">
-                <span style="font-size: 12px; color: var(--af-text-muted, #9ca3af);">共 ${this.totalTicketsCount || this.historyList.length} 条记录</span>
-                <button class="btn-secondary btn-refresh-history">🔄 刷新</button>
-              </div>
-              <div class="timeline-view-wrapper">
-                ${this.renderTimelineView()}
-              </div>
+              ${
+                this.accessControlConfig?.enabled && !this.isAuthorized()
+                  ? `
+                <div class="lockout-shield-container">
+                  <div class="lockout-shield-icon">🛡️</div>
+                  <div class="lockout-shield-title">${this.accessControlConfig.promptTitle || '受限访问保护'}</div>
+                  <div class="lockout-shield-msg">未获得授权前，禁止查看历史工单与排查进度。请前往「⚙️ 联调设置」输入内测密钥解锁设备。</div>
+                  <div style="margin-top: 14px; display: flex; justify-content: center;">
+                    <button type="button" class="btn-primary btn-jump-to-settings" style="width: auto; padding: 6px 18px; font-size: 12px;">⚙️ 前往联调设置</button>
+                  </div>
+                </div>
+              `
+                  : `
+                <div class="history-controls">
+                  <span style="font-size: 12px; color: var(--af-text-muted, #9ca3af);">共 ${this.totalTicketsCount || this.historyList.length} 条记录</span>
+                  <button class="btn-secondary btn-refresh-history">🔄 刷新</button>
+                </div>
+                <div class="timeline-view-wrapper">
+                  ${this.renderTimelineView()}
+                </div>
+              `
+              }
             </div>
 
             <!-- 3. 联调设置面板 -->

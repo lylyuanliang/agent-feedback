@@ -278,7 +278,7 @@ describe('@agent-feedback/vite-plugin DevServer Middleware & Request Handling', 
   });
 
   it('should handle OPTIONS preflight with 204 No Content and CORS headers', async () => {
-    const plugin = agentFeedback();
+    const plugin = agentFeedback({ accessControl: { enabled: false } });
     const server = new MockDevServer(tmpProjectDir);
     plugin.configureServer?.(server);
 
@@ -293,7 +293,7 @@ describe('@agent-feedback/vite-plugin DevServer Middleware & Request Handling', 
   });
 
   it('should return empty array for GET /api/__agent_feedback/list when queue does not exist', async () => {
-    const plugin = agentFeedback();
+    const plugin = agentFeedback({ accessControl: { enabled: false } });
     const server = new MockDevServer(tmpProjectDir);
     plugin.configureServer?.(server);
 
@@ -308,7 +308,7 @@ describe('@agent-feedback/vite-plugin DevServer Middleware & Request Handling', 
   });
 
   it('should submit feedback via POST /api/__agent_feedback/submit and save to queue', async () => {
-    const plugin = agentFeedback();
+    const plugin = agentFeedback({ accessControl: { enabled: false } });
     const server = new MockDevServer(tmpProjectDir);
     plugin.configureServer?.(server);
 
@@ -353,7 +353,7 @@ describe('@agent-feedback/vite-plugin DevServer Middleware & Request Handling', 
   });
 
   it('should decode and save base64 screenshot files and serve them statically', async () => {
-    const plugin = agentFeedback();
+    const plugin = agentFeedback({ accessControl: { enabled: false } });
     const server = new MockDevServer(tmpProjectDir);
     plugin.configureServer?.(server);
 
@@ -406,7 +406,7 @@ describe('@agent-feedback/vite-plugin DevServer Middleware & Request Handling', 
 
   it('should handle custom storageDir option properly', async () => {
     const customDir = 'custom_feedback_dir';
-    const plugin = agentFeedback({ storageDir: customDir });
+    const plugin = agentFeedback({ storageDir: customDir, accessControl: { enabled: false } });
     const server = new MockDevServer(tmpProjectDir);
     plugin.configureServer?.(server);
 
@@ -423,7 +423,7 @@ describe('@agent-feedback/vite-plugin DevServer Middleware & Request Handling', 
   });
 
   it('should gracefully handle malformed JSON in submit endpoint', async () => {
-    const plugin = agentFeedback();
+    const plugin = agentFeedback({ accessControl: { enabled: false } });
     const server = new MockDevServer(tmpProjectDir);
     plugin.configureServer?.(server);
 
@@ -454,7 +454,7 @@ describe('@agent-feedback/vite-plugin Sharded Persistence & Upgraded API Middlew
   });
 
   it('should save submissions to feedback_YYYY-MM-DD.json and update feedback_index.json', async () => {
-    const plugin = agentFeedback();
+    const plugin = agentFeedback({ accessControl: { enabled: false } });
     const server = new MockDevServer(tmpProjectDir);
     plugin.configureServer?.(server);
 
@@ -500,7 +500,7 @@ describe('@agent-feedback/vite-plugin Sharded Persistence & Upgraded API Middlew
     ];
     fs.writeFileSync(path.resolve(feedbackDir, 'feedback_queue.json'), JSON.stringify(legacyItems, null, 2), 'utf-8');
 
-    const plugin = agentFeedback();
+    const plugin = agentFeedback({ accessControl: { enabled: false } });
     const server = new MockDevServer(tmpProjectDir);
     plugin.configureServer?.(server);
 
@@ -512,7 +512,7 @@ describe('@agent-feedback/vite-plugin Sharded Persistence & Upgraded API Middlew
   });
 
   it('should handle POST /api/__agent_feedback/notice to create agent notice', async () => {
-    const plugin = agentFeedback();
+    const plugin = agentFeedback({ accessControl: { enabled: false } });
     const server = new MockDevServer(tmpProjectDir);
     plugin.configureServer?.(server);
 
@@ -533,7 +533,7 @@ describe('@agent-feedback/vite-plugin Sharded Persistence & Upgraded API Middlew
   });
 
   it('should handle GET /api/__agent_feedback/dates and query by date in /list', async () => {
-    const plugin = agentFeedback();
+    const plugin = agentFeedback({ accessControl: { enabled: false } });
     const server = new MockDevServer(tmpProjectDir);
     plugin.configureServer?.(server);
 
@@ -573,7 +573,7 @@ describe('@agent-feedback/vite-plugin Sharded Persistence & Upgraded API Middlew
   });
 
   it('should handle POST /api/__agent_feedback/status for cross-shard status updates', async () => {
-    const plugin = agentFeedback();
+    const plugin = agentFeedback({ accessControl: { enabled: false } });
     const server = new MockDevServer(tmpProjectDir);
     plugin.configureServer?.(server);
 
@@ -634,7 +634,8 @@ describe('@agent-feedback/vite-plugin Sharded Persistence & Upgraded API Middlew
     const code = plugin.load?.('\0agent-feedback-client-virtual');
     assert.ok(code, 'virtual module code should exist');
     assert.ok(code.includes('custom_af_key'), 'custom storageKey should be serialized in options');
-    assert.ok(code.includes('test-pairing-key'), 'accessKey should be serialized');
+    assert.ok(!code.includes('test-pairing-key'), 'plaintext accessKey should not be leaked in client bundle');
+    assert.ok(code.includes('afa27b44d43b02a9fea41d13cedc2e4016cfcf87c5dbf990e593669aa8ce286d'), 'keyHash should be serialized');
     assert.ok(code.includes('GitHub Issues'), 'hostChannel name should be serialized');
     assert.ok(code.includes('https://github.com/example/repo/issues'), 'hostChannel url should be serialized');
   });
@@ -666,6 +667,7 @@ describe('@agent-feedback/vite-plugin - Sentinel Auto Lifecycle & New Project In
 
     // 模拟新项目接入配置：在 vite.config.ts 传入 sentinel.autoStart
     const plugin = agentFeedback({
+      accessControl: { enabled: false },
       sentinel: {
         autoStart: true,
         debounceMs: 50,
@@ -706,6 +708,7 @@ describe('@agent-feedback/vite-plugin - Sentinel Auto Lifecycle & New Project In
     const wakeupBatches: any[] = [];
 
     const plugin = agentFeedback({
+      accessControl: { enabled: false },
       sentinel: {
         autoStart: true,
         debounceMs: 40,
@@ -743,6 +746,7 @@ describe('@agent-feedback/vite-plugin - Sentinel Auto Lifecycle & New Project In
 
   it('should cleanly terminate sentinel when DevServer closes', async () => {
     const plugin = agentFeedback({
+      accessControl: { enabled: false },
       sentinel: {
         autoStart: true,
         debounceMs: 50,
@@ -784,7 +788,7 @@ describe('@agent-feedback/vite-plugin Multipart Media Streaming & HTTP 206 Range
   });
 
   it('should handle chunked streaming upload (POST /api/__agent_feedback/media/chunk) and assemble final file', async () => {
-    const plugin = agentFeedback({ storageDir: '.agent/feedback' });
+    const plugin = agentFeedback({ storageDir: '.agent/feedback', accessControl: { enabled: false } });
     plugin.configureServer?.(server);
 
     const uploadId = 'test_vid_' + Date.now();
@@ -850,7 +854,7 @@ describe('@agent-feedback/vite-plugin Multipart Media Streaming & HTTP 206 Range
   });
 
   it('should handle single media streaming upload (POST /api/__agent_feedback/media/upload)', async () => {
-    const plugin = agentFeedback({ storageDir: '.agent/feedback' });
+    const plugin = agentFeedback({ storageDir: '.agent/feedback', accessControl: { enabled: false } });
     plugin.configureServer?.(server);
 
     const testVideoContent = Buffer.from('RAW_VIDEO_STREAM_BYTES_CONTENT');
@@ -910,7 +914,7 @@ describe('@agent-feedback/vite-plugin Multipart Media Streaming & HTTP 206 Range
   });
 
   it('should sync media items when submitting feedback via /submit', async () => {
-    const plugin = agentFeedback({ storageDir: '.agent/feedback' });
+    const plugin = agentFeedback({ storageDir: '.agent/feedback', accessControl: { enabled: false } });
     plugin.configureServer?.(server);
 
     const req = new MockReq('POST', '/api/__agent_feedback/submit');
@@ -934,5 +938,58 @@ describe('@agent-feedback/vite-plugin Multipart Media Streaming & HTTP 206 Range
     const videoMedia = item.media.find((m: any) => m.url === 'media/sample_video.mp4');
     assert.ok(videoMedia, 'Video media item should be registered');
     assert.strictEqual(videoMedia.type, 'video');
+  });
+
+  describe('accessControl security gate (default enabled)', () => {
+    it('should block unauthenticated requests with 401 when accessControl is default enabled', async () => {
+      const plugin = agentFeedback({
+        storageDir: '.agent/feedback',
+        accessControl: { accessKey: 'test-secret-123' }
+      });
+      plugin.configureServer?.(server);
+
+      // 1. 未授权请求 /list 返回 401
+      const unauthReq = new MockReq('GET', '/api/__agent_feedback/list');
+      const unauthRes = new MockRes();
+      await server.dispatch(unauthReq, unauthRes);
+      assert.strictEqual(unauthRes.statusCode, 401);
+      const errBody = JSON.parse(unauthRes.body);
+      assert.strictEqual(errBody.code, 'UNAUTHORIZED');
+
+      // 2. 公开端点 /auth/config 免鉴权返回 200
+      const cfgReq = new MockReq('GET', '/api/__agent_feedback/auth/config');
+      const cfgRes = new MockRes();
+      await server.dispatch(cfgReq, cfgRes);
+      assert.strictEqual(cfgRes.statusCode, 200);
+      const cfgBody = JSON.parse(cfgRes.body);
+      assert.strictEqual(cfgBody.accessControl.enabled, true);
+      assert.ok(cfgBody.accessControl.keyHash);
+
+      // 3. 校验端点 /auth/verify 校验错误密钥返回 401
+      const failVerifyReq = new MockReq('POST', '/api/__agent_feedback/auth/verify');
+      const failVerifyRes = new MockRes();
+      const failP = server.dispatch(failVerifyReq, failVerifyRes);
+      failVerifyReq.send(JSON.stringify({ key: 'wrong-key' }));
+      await failP;
+      assert.strictEqual(failVerifyRes.statusCode, 401);
+
+      // 4. 校验端点 /auth/verify 校验正确密钥返回 200
+      const okVerifyReq = new MockReq('POST', '/api/__agent_feedback/auth/verify');
+      const okVerifyRes = new MockRes();
+      const okP = server.dispatch(okVerifyReq, okVerifyRes);
+      okVerifyReq.send(JSON.stringify({ key: 'test-secret-123' }));
+      await okP;
+      assert.strictEqual(okVerifyRes.statusCode, 200);
+      const okVerifyBody = JSON.parse(okVerifyRes.body);
+      assert.strictEqual(okVerifyBody.verified, true);
+
+      // 5. 携带合法的 Authorization: Bearer <key> 访问 /list 返回 200
+      const authReq = new MockReq('GET', '/api/__agent_feedback/list', {
+        'authorization': 'Bearer test-secret-123'
+      });
+      const authRes = new MockRes();
+      await server.dispatch(authReq, authRes);
+      assert.strictEqual(authRes.statusCode, 200);
+    });
   });
 });

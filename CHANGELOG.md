@@ -4,6 +4,31 @@
 
 ---
 
+## [1.4.0] - 2026-11-05
+
+### 🚀 重大核心特性 (Key Highlights)
+
+- **服务端全面受限访问门禁拦截 (Server-Side Access Gatekeeper - Default Enabled)**
+  - `@agent-feedback/vite-plugin` 的 `accessControl` 默认置为开启（`enabled: true`），同时支持传入 `accessControl: { enabled: false }` 或 `accessControl: false` 按需关闭；
+  - 严格拦截未授权请求：所有历史工单读取（`GET /list`、`GET /dates`）、反馈提交（`POST /submit`）、工单状态回写（`POST /status`）、通知广播（`POST /notice`）及媒体分块上传（`POST /media/chunk`, `POST /media/upload`）接口全面实施 401 鉴权拦截，彻底阻断未授权用户查看历史工单、日志与排查信息；
+  - 自动向后兼容放行静态媒体流读取（`GET /screenshots/` 与 `GET /media/`），确保移动端与浏览器 `<img>`/`<video>` 标签在已授权历史中流畅渲染。
+
+- **动态内测密钥自动生成与零凭据泄漏 (Auto Secret Generation & Bundle Sanitization)**
+  - 服务端启动时若未显式指定密钥或环境变量（`AGENT_FEEDBACK_SECRET`），自动在项目根目录生成未追踪的本地密钥文件 `scratch/.agent-feedback-secret`；
+  - 客户端构建与虚拟模块加载时自动过滤并剔除明文 `accessKey`，仅下发安全脱敏的 SHA-256 哈希散列值（`keyHash`），严守零凭据泄漏安全红线；
+  - 自动将 `scratch/` 与 `.agent-feedback-secret` 纳入 `.gitignore` 保护。
+
+- **远程与混合端（Capacitor/Hybrid）动态密钥配对校验 (Dynamic Remote Verification)**
+  - 服务端新增 `GET /api/__agent_feedback/auth/config` 公共探针端点与 `POST /api/__agent_feedback/auth/verify` 鉴权校验端点；
+  - `@agent-feedback/client` 客户端增强 `authorize(key)`：当客户端与构建期静态哈希不一致时（如 CI 自动化编译生成的独立 Debug APK 与开发者本地 DevServer 秘钥不一致），自动发起远程 DevServer 校验，通过后动态信任并持久化；
+  - 「⚙️ 联调设置」面板在「测试连通性」与「保存地址」时自动向目标服务同步门禁状态；
+  - 客户端所有 API 请求自动携带统一授权请求头（`Authorization: Bearer <key>`、`X-Access-Hash`）。
+
+- **客户端历史面板访问保护 (History Tab Lockout Shield)**
+  - 「历史与进度」面板新增未授权拦截保护层，未授权状态下阻断列表查询与定时轮询，展示安全遮罩并支持一键跳转「⚙️ 联调设置」完成配对解锁。
+
+---
+
 ## [1.3.0] - 2026-11-04
 
 ### 🚀 重大核心特性 (Key Highlights)

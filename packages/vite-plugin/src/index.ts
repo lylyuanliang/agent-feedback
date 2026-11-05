@@ -5,6 +5,7 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
+import crypto from 'node:crypto';
 import { startSentinel, detectAntigravityConversation } from '@lylyuanliang/agent-feedback-sentinel';
 import type { WatcherAdapter } from '@lylyuanliang/agent-feedback-sentinel';
 import {
@@ -32,6 +33,116 @@ export function getLocalDateString(d: Date | number | string = new Date()): stri
   const month = String(dateObj.getMonth() + 1).padStart(2, '0');
   const day = String(dateObj.getDate()).padStart(2, '0');
   return `${year}-${month}-${day}`;
+}
+
+/**
+ * 解析并生成端侧访问授权门禁配置 (可配置，默认开启)
+ */
+export function resolveAccessControlConfig(
+  userConfig: AccessControlConfig | boolean | undefined,
+  projectRoot: string
+): AccessControlConfig {
+  // 显式传入 false 或 enabled: false 则关闭门禁校验
+  if (userConfig === false || (typeof userConfig === 'object' && userConfig.enabled === false)) {
+    return { enabled: false };
+  }
+
+  const cfg: AccessControlConfig = typeof userConfig === 'object' && userConfig !== null ? { ...userConfig } : {};
+  cfg.enabled = true;
+  cfg.storageKey = cfg.storageKey || 'af_access_key';
+  cfg.promptTitle = cfg.promptTitle || '受限访问保护';
+  cfg.promptMessage = cfg.promptMessage || '当前环境已启用 AI 哨兵直连通道，请输入开发机生成的配对密钥解锁设备。';
+
+  // 若用户已显式提供 accessKey 或 keyHash，直接使用
+  if (cfg.accessKey || cfg.keyHash) {
+    if (cfg.accessKey && !cfg.keyHash) {
+      cfg.keyHash = crypto.createHash('sha256').update(cfg.accessKey).digest('hex');
+    }
+    return cfg;
+  }
+
+  // 否则自动从环境变量或本地未跟踪密钥文件读取/生成
+  const secretRelFile = cfg.secretFile || 'scratch/.agent-feedback-secret';
+  const secretPath = path.resolve(projectRoot, secretRelFile);
+  let secret = process.env.AGENT_FEEDBACK_SECRET || '';
+
+  if (!secret) {
+    if (fs.existsSync(secretPath)) {
+      try {
+        secret = fs.readFileSync(secretPath, 'utf8').trim();
+      } catch {
+        // ignore
+      }
+    }
+
+    if (!secret) {
+      secret = 'af-' + crypto.randomBytes(4).toString('hex');
+      try {
+        if (!fs.existsSync(path.dirname(secretPath))) {
+          fs.mkdirSync(path.dirname(secretPath), { recursive: true });
+        }
+        fs.writeFileSync(secretPath, secret, 'utf8');
+      } catch {
+        // ignore
+      }
+    }
+  }
+
+  cfg.keyHash = crypto.createHash('sha256').update(secret).digest('hex');
+  return cfg;
+}
+
+/**
+ * 校验请求是否已携带合法的授权凭据 (Bearer Token / X-Access-Key / X-Access-Hash / query)
+ */
+export function isAuthorizedRequest(req: any, accessControl: AccessControlConfig): boolean {
+  if (!accessControl.enabled) return true;
+
+  const rawUrl = req.url || '';
+  const urlPath = rawUrl.split('?')[0];
+
+  // 静态媒体资源允许直接通过（浏览器 <img> 和 <video> 标签发起 GET 请求不携带自定义 Header）
+  if (req.method === 'GET' && (urlPath.startsWith('/api/__agent_feedback/screenshots/') || urlPath.startsWith('/api/__agent_feedback/media/'))) {
+    return true;
+  }
+
+  const authHeader = req.headers['authorization'] || '';
+  let token = '';
+  if (authHeader.startsWith('Bearer ') || authHeader.startsWith('bearer ')) {
+    token = authHeader.slice(7).trim();
+  }
+
+  const headerKey = req.headers['x-access-key'] || '';
+  const headerHash = req.headers['x-access-hash'] || '';
+  const urlObj = new URL(req.url || '', 'http://localhost');
+  const queryKey = urlObj.searchParams.get('access_key') || '';
+  const queryHash = urlObj.searchParams.get('access_hash') || '';
+
+  const candidateKey = token || headerKey || queryKey;
+  const candidateHash = headerHash || queryHash;
+
+  if (accessControl.accessKey && candidateKey === accessControl.accessKey) {
+    return true;
+  }
+
+  if (accessControl.keyHash) {
+    const target = accessControl.keyHash.toLowerCase();
+    if (candidateHash && candidateHash.toLowerCase() === target) {
+      return true;
+    }
+    if (candidateKey) {
+      const computed = crypto.createHash('sha256').update(candidateKey).digest('hex').toLowerCase();
+      if (computed === target) {
+        return true;
+      }
+    }
+  }
+
+  if (!accessControl.accessKey && !accessControl.keyHash) {
+    return true;
+  }
+
+  return false;
 }
 
 /**
@@ -404,6 +515,7 @@ export type Plugin = AgentFeedbackPlugin;
  */
 export function agentFeedback(options: AgentFeedbackPluginOptions = {}): AgentFeedbackPlugin {
   let isDev = true;
+  let resolvedAccessControl: AccessControlConfig = resolveAccessControlConfig(options.accessControl, process.cwd());
   const storageRelDir = options.storageDir || '.agent/feedback';
   const defaultTheme: FeedbackTheme = options.theme || 'dark';
   const primaryColor = options.primaryColor;
@@ -417,12 +529,15 @@ export function agentFeedback(options: AgentFeedbackPluginOptions = {}): AgentFe
       if (config && typeof config.command === 'string') {
         isDev = config.command === 'serve';
       }
+      const root = config?.root || process.cwd();
+      resolvedAccessControl = resolveAccessControlConfig(options.accessControl, root);
     },
 
     configureServer(server: any) {
       if (!isDev) return;
 
       const projectRoot = server?.config?.root || process.cwd();
+      resolvedAccessControl = resolveAccessControlConfig(options.accessControl, projectRoot);
       const feedbackDir = path.resolve(projectRoot, storageRelDir);
       const screenshotsDir = path.resolve(feedbackDir, 'screenshots');
       const mediaDir = path.resolve(feedbackDir, 'media');
@@ -467,12 +582,98 @@ export function agentFeedback(options: AgentFeedbackPluginOptions = {}): AgentFe
           // 统一 CORS 响应头，支持跨源与移动端访问
           res.setHeader('Access-Control-Allow-Origin', '*');
           res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-          res.setHeader('Access-Control-Allow-Headers', 'Content-Type, X-Upload-Id, X-Chunk-Index, X-Total-Chunks, X-File-Name, Range');
+          res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Access-Key, X-Access-Hash, X-Upload-Id, X-Chunk-Index, X-Total-Chunks, X-File-Name, Range');
           res.setHeader('Access-Control-Expose-Headers', 'Content-Range, Accept-Ranges, Content-Length');
 
           if (req.method === 'OPTIONS') {
             res.statusCode = 204;
             res.end();
+            return;
+          }
+
+          // A. 身份配置公开端点: GET /api/__agent_feedback/auth/config (免鉴权，支持动态同步)
+          if (req.method === 'GET' && urlPath === '/api/__agent_feedback/auth/config') {
+            res.setHeader('Content-Type', 'application/json');
+            res.statusCode = 200;
+            res.end(JSON.stringify({
+              success: true,
+              accessControl: {
+                enabled: resolvedAccessControl.enabled,
+                keyHash: resolvedAccessControl.keyHash,
+                storageKey: resolvedAccessControl.storageKey || 'af_access_key',
+                promptTitle: resolvedAccessControl.promptTitle,
+                promptMessage: resolvedAccessControl.promptMessage
+              },
+              hostChannel: options.hostChannel || {}
+            }));
+            return;
+          }
+
+          // B. 身份校验公开端点: POST /api/__agent_feedback/auth/verify (免鉴权，供端侧主动校验)
+          if (req.method === 'POST' && urlPath === '/api/__agent_feedback/auth/verify') {
+            let body = '';
+            req.on('data', (chunk: any) => { body += chunk; });
+            req.on('end', () => {
+              try {
+                const data = body ? JSON.parse(body) : {};
+                const candidateKey = (data.key || '').trim();
+                const candidateHash = (data.hash || '').trim();
+                let isValid = false;
+
+                if (!resolvedAccessControl.enabled) {
+                  isValid = true;
+                } else if (resolvedAccessControl.accessKey && candidateKey === resolvedAccessControl.accessKey) {
+                  isValid = true;
+                } else if (resolvedAccessControl.keyHash) {
+                  const target = resolvedAccessControl.keyHash.toLowerCase();
+                  if (candidateHash && candidateHash.toLowerCase() === target) {
+                    isValid = true;
+                  } else if (candidateKey) {
+                    const computed = crypto.createHash('sha256').update(candidateKey).digest('hex').toLowerCase();
+                    if (computed === target) {
+                      isValid = true;
+                    }
+                  }
+                } else {
+                  isValid = true;
+                }
+
+                res.setHeader('Content-Type', 'application/json');
+                if (isValid) {
+                  res.statusCode = 200;
+                  res.end(JSON.stringify({
+                    success: true,
+                    verified: true,
+                    keyHash: resolvedAccessControl.keyHash,
+                    storageKey: resolvedAccessControl.storageKey || 'af_access_key'
+                  }));
+                } else {
+                  res.statusCode = 401;
+                  res.end(JSON.stringify({
+                    success: false,
+                    verified: false,
+                    error: '密钥验证失败，请核对开发机 secret 后重试',
+                    code: 'INVALID_KEY'
+                  }));
+                }
+              } catch (err: any) {
+                res.statusCode = 400;
+                res.setHeader('Content-Type', 'application/json');
+                res.end(JSON.stringify({ success: false, error: err.message || 'Malformed body' }));
+              }
+            });
+            return;
+          }
+
+          // C. 安全红线拦截门禁：未授权请求禁止调用任何数据读写接口
+          if (!isAuthorizedRequest(req, resolvedAccessControl)) {
+            res.statusCode = 401;
+            res.setHeader('Content-Type', 'application/json');
+            res.end(JSON.stringify({
+              success: false,
+              error: '受限访问保护：当前环境未授权，禁止调用此接口。请先前往「⚙️ 联调设置」输入内测密钥解锁设备。',
+              code: 'UNAUTHORIZED'
+            }));
             return;
           }
 
@@ -989,7 +1190,14 @@ export function agentFeedback(options: AgentFeedbackPluginOptions = {}): AgentFe
         const themeLiteral = JSON.stringify(defaultTheme);
         const colorLiteral = primaryColor ? JSON.stringify(primaryColor) : 'undefined';
         const apiBaseLiteral = options.apiBase ? JSON.stringify(options.apiBase.trim().replace(/\/+$/, '')) : 'undefined';
-        const accessControlLiteral = options.accessControl ? JSON.stringify(options.accessControl) : 'undefined';
+        const safeAccessControl = resolvedAccessControl.enabled ? {
+          enabled: true,
+          keyHash: resolvedAccessControl.keyHash,
+          storageKey: resolvedAccessControl.storageKey || 'af_access_key',
+          promptTitle: resolvedAccessControl.promptTitle,
+          promptMessage: resolvedAccessControl.promptMessage
+        } : { enabled: false };
+        const accessControlLiteral = JSON.stringify(safeAccessControl);
         const hostChannelLiteral = options.hostChannel ? JSON.stringify(options.hostChannel) : 'undefined';
         // 输出虚拟客户端代码，驱动 Shadow DOM 自定义元素注册、主题透传与挂载
         return `

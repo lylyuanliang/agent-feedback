@@ -8,3 +8,7 @@ dist/
 
 # Internal agent handoffs (do not publish)
 docs/handoffs/
+
+# Local runtime & test artifacts
+scratch/
+.agent-feedback-secret

@@ -113,14 +113,36 @@ export interface ExtensionContext {
 }
 
 /**
- * 访问控制与端侧授权配置
+ * 访问控制与端侧授权配置 (默认开启)
  */
 export interface AccessControlConfig {
+  /**
+   * 是否开启访问门禁校验，默认为 true (默认开启)
+   */
   enabled?: boolean;
+  /**
+   * 明文匹配密钥 (选填)
+   */
   accessKey?: string;
-  keyHash?: string; // SHA-256 哈希值匹配
-  storageKey?: string; // 默认 'af_access_key'
+  /**
+   * SHA-256 哈希值匹配 (推荐，零明文泄露)
+   */
+  keyHash?: string;
+  /**
+   * 本地 localStorage 持久化 Key，默认 'af_access_key'
+   */
+  storageKey?: string;
+  /**
+   * 本地密钥持久化文件路径，默认 'scratch/.agent-feedback-secret'
+   */
+  secretFile?: string;
+  /**
+   * 门禁拦截弹窗标题
+   */
   promptTitle?: string;
+  /**
+   * 门禁拦截弹窗正文提示
+   */
   promptMessage?: string;
 }
 

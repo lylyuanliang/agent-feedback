@@ -253,6 +253,54 @@ agentFeedback({
 })
 ```
 
+### 4. 端侧访问授权门禁与配对密钥 (Access Control & Pairing Secret)
+
+当开发机通过 cpolar / ngrok 等公网隧道对外暴露或面向分布式团队公测时，为防止未授权的外部匿名访问查看历史排查日志或提交恶意工单触发本地 Agent 执行，插件原生支持 **服务端安全门禁与动态密钥配对**：
+
+#### 🛡️ 架构与安全防护设计
+* **默认开启与零样板代码**：在 v1.4.0+ 中，访问门禁为 **开箱即用、默认开启**（`accessControl.enabled = true`）。开发机首次启动时会自动在项目根目录创建未跟踪的密钥文件 `scratch/.agent-feedback-secret`（并在 `.gitignore` 中自动忽略），并安全加载；
+* **全面鉴权拦截**：未授权请求访问所有历史工单读取（`GET /list`, `GET /dates`）、反馈提交（`POST /submit`）、工单状态回写（`POST /status`）等接口时均会被服务端 HTTP 401 拦截；端侧历史面板也会展示受限遮罩保护，严防历史日志与系统信息外泄；
+* **零明文下发原则**：客户端运行时仅接收密钥的 SHA-256 哈希值（`keyHash`），即便前端代码或移动离线包被反编译，也无法反解出开发机的原始配对密钥；
+* **远程与混合端（Capacitor/Hybrid）自适应校验**：对于 CI/CD 独立编译生成的 Debug APK（其本地编译时未生成 secret），在输入密钥后会自动请求开发机服务端（`/api/__agent_feedback/auth/verify`）进行远程比对，比对成功后即时持久化到本地并放行。
+
+#### ⚙️ 配置示例 (`vite.config.ts`)
+
+**默认开启（推荐，零配置）：**
+```typescript
+import { defineConfig } from 'vite';
+import { agentFeedback } from '@lylyuanliang/agent-feedback-vite-plugin';
+
+export default defineConfig({
+  plugins: [
+    agentFeedback({
+      storageDir: 'scratch/feedback'
+      // accessControl 默认开启，自动生成 scratch/.agent-feedback-secret
+    })
+  ]
+});
+```
+
+**若需显式关闭门禁（仅限纯内网安全环境）：**
+```typescript
+export default defineConfig({
+  plugins: [
+    agentFeedback({
+      storageDir: 'scratch/feedback',
+      accessControl: { enabled: false } // 显式关闭门禁
+    })
+  ]
+});
+```
+
+#### 🔑 开发者如何获取与配对密钥
+1. **查看本地密钥生成位置**：
+   - 启动 DevServer 后，插件会在项目根目录自动创建并写入密钥：**`scratch/.agent-feedback-secret`**；
+   - 亦可在启动命令前通过环境变量指定：`AGENT_FEEDBACK_SECRET=my-custom-token npm run dev`。
+2. **手机端/混合端配对**：
+   - 在端侧反馈悬浮窗中切换至 **「⚙️ 联调设置」** 面板；
+   - 在「受限访问门禁与身份凭证」输入框中输入上述密钥，点击 **「🔑 验证并保存授权」**；
+   - 验证通过后自动持久化至端侧 `localStorage`，历史面板与新建反馈立即解除受限！
+
 ---
 
 ## 🔌 扩展槽功能指南 (Extension Tabs API)

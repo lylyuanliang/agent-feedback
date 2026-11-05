@@ -230,7 +230,7 @@ describe('Task 5: Integration Playground & End-to-End Verification (examples/vit
     });
 
     it('should submit feedback to /api/__agent_feedback/submit and persist to feedback_queue.json', async () => {
-      const plugin = agentFeedbackPlugin();
+      const plugin = agentFeedbackPlugin({ accessControl: { enabled: false } });
       devServerInstance = await startTestDevServer(plugin, tmpRoot);
 
       const payload = {
@@ -288,7 +288,7 @@ describe('Task 5: Integration Playground & End-to-End Verification (examples/vit
     });
 
     it('should read back feedback history through GET /api/__agent_feedback/list', async () => {
-      const plugin = agentFeedbackPlugin();
+      const plugin = agentFeedbackPlugin({ accessControl: { enabled: false } });
       devServerInstance = await startTestDevServer(plugin, tmpRoot);
 
       // Initially empty
@@ -393,7 +393,7 @@ describe('Task 5: Integration Playground & End-to-End Verification (examples/vit
     it('should complete the full roundtrip: DevServer POST -> Sentinel Triage/Wakeup -> CLI Update -> DevServer GET', async () => {
       const storageDir = path.resolve(tmpRoot, '.agent/feedback');
       const queueFile = path.resolve(storageDir, 'feedback_queue.json');
-      const plugin = agentFeedbackPlugin({ storageDir: '.agent/feedback' });
+      const plugin = agentFeedbackPlugin({ storageDir: '.agent/feedback', accessControl: { enabled: false } });
       devServerInstance = await startTestDevServer(plugin, tmpRoot, storageDir);
 
       // Step 1: Client submits pending feedback via HTTP to DevServer Connect middleware
@@ -478,7 +478,7 @@ describe('Task 5: Integration Playground & End-to-End Verification (examples/vit
     it('should defend against prompt injection attempts through the end-to-end pipeline', async () => {
       const storageDir = path.resolve(tmpRoot, '.agent/feedback');
       const queueFile = path.resolve(storageDir, 'feedback_queue.json');
-      const plugin = agentFeedbackPlugin({ storageDir: '.agent/feedback' });
+      const plugin = agentFeedbackPlugin({ storageDir: '.agent/feedback', accessControl: { enabled: false } });
       devServerInstance = await startTestDevServer(plugin, tmpRoot, storageDir);
 
       // Submit malicious injection attempt

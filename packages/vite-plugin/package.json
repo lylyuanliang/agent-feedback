@@ -1,6 +1,6 @@
 {
   "name": "@lylyuanliang/agent-feedback-vite-plugin",
-  "version": "1.3.0",
+  "version": "1.4.0",
   "description": "Zero-code bundler plugin & DevServer middleware for Agent Feedback Bridge",
   "type": "module",
   "main": "dist/index.js",
