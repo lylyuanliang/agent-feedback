@@ -3130,15 +3130,19 @@ export class AgentFeedbackWidget extends CustomElementBase {
 
         .ticket-video-card {
           width: 100%;
+          box-sizing: border-box;
           border-radius: 8px;
-          background: rgba(0, 0, 0, 0.5);
+          background: #000;
           border: 1px solid var(--af-border, rgba(255, 255, 255, 0.15));
           overflow: hidden;
         }
 
         .ticket-video-player {
           width: 100%;
-          max-height: 220px;
+          height: auto;
+          aspect-ratio: 16 / 9;
+          max-height: 260px;
+          object-fit: contain;
           display: block;
           background: #000;
           outline: none;
