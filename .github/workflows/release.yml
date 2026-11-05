@@ -1,0 +1,86 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag version to release (e.g. v1.4.0)'
+        required: true
+        default: 'v1.4.0'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Build & Publish GitHub Release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v3
+        with:
+          version: 9
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile=false
+
+      - name: Run tests
+        run: pnpm -r run test
+
+      - name: Build packages
+        run: pnpm -r run build
+
+      - name: Determine Version Tag
+        id: vars
+        run: |
+          RAW_TAG="${GITHUB_REF_NAME}"
+          if [ -z "$RAW_TAG" ] || [ "$RAW_TAG" = "null" ] || [ "$RAW_TAG" = "main" ]; then
+            RAW_TAG="${{ github.event.inputs.tag }}"
+          fi
+          VERSION="${RAW_TAG#v}"
+          echo "tag=$RAW_TAG" >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Resolved tag: $RAW_TAG, version: $VERSION"
+
+      - name: Package npm tarballs & zip archive
+        run: |
+          VERSION="${{ steps.vars.outputs.version }}"
+          mkdir -p "releases/v${VERSION}"
+          pnpm --dir packages/core pack --pack-destination "releases/v${VERSION}"
+          pnpm --dir packages/client pack --pack-destination "releases/v${VERSION}"
+          pnpm --dir packages/sentinel pack --pack-destination "releases/v${VERSION}"
+          pnpm --dir packages/vite-plugin pack --pack-destination "releases/v${VERSION}"
+
+          cd "releases/v${VERSION}"
+          zip -j "agent-feedback-v${VERSION}-npm-packages.zip" *.tgz
+          cd ../..
+
+      - name: Extract Release Notes from CHANGELOG.md
+        run: node scripts/extract_release_notes.js "${{ steps.vars.outputs.tag }}"
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.vars.outputs.tag }}
+          name: "Release ${{ steps.vars.outputs.tag }}"
+          body_path: RELEASE_NOTES.md
+          draft: false
+          prerelease: false
+          files: |
+            releases/${{ steps.vars.outputs.tag }}/*.tgz
+            releases/${{ steps.vars.outputs.tag }}/*.zip
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

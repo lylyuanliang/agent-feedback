@@ -12,3 +12,4 @@ docs/handoffs/
 # Local runtime & test artifacts
 scratch/
 .agent-feedback-secret
+RELEASE_NOTES.md
