@@ -408,11 +408,11 @@ export function openFeedbackModal(tab: 'submit' | 'history' | string = 'submit')
   if (typeof document === 'undefined') return;
   const widget = document.querySelector('agent-feedback-widget') as any;
   if (widget) {
+    if (typeof widget.setTab === 'function' && tab) {
+      widget.setTab(tab);
+    }
     if (typeof widget.toggleModal === 'function') {
       widget.toggleModal(true);
-    }
-    if (typeof widget.setTab === 'function') {
-      widget.setTab(tab);
     }
   }
 }
@@ -756,7 +756,7 @@ export async function captureScreenshot(): Promise<string | null> {
   const backdropsToRestore: HTMLElement[] = [];
   widgets.forEach((w: any) => {
     const backdrop = w.shadowRoot?.querySelector('.modal-backdrop') as HTMLElement;
-    if (backdrop && backdrop.style.display !== 'none') {
+    if (backdrop && (backdrop.style.display !== 'none' || backdrop.classList.contains('af-modal-open'))) {
       backdrop.style.opacity = '0';
       backdrop.style.pointerEvents = 'none';
       backdropsToRestore.push(backdrop);
@@ -937,14 +937,18 @@ export class AgentFeedbackWidget extends CustomElementBase {
 
   public setAccessControl(config: AccessControlConfig): void {
     this.accessControlConfig = { ...this.accessControlConfig, ...(config || {}) };
-    this.render();
-    this.bindEvents();
+    if (!this.isOpen) {
+      this.render();
+      this.bindEvents();
+    }
   }
 
   public setHostChannel(config: HostChannelConfig): void {
     this.hostChannelConfig = { ...this.hostChannelConfig, ...(config || {}) };
-    this.render();
-    this.bindEvents();
+    if (!this.isOpen) {
+      this.render();
+      this.bindEvents();
+    }
   }
 
   public isAuthorized(): boolean {
@@ -1241,21 +1245,75 @@ export class AgentFeedbackWidget extends CustomElementBase {
   }
 
   /**
-   * 切换弹窗展开/关闭
+   * 切换弹窗展开/关闭 (原生局部切换，0 毫秒完成，零 DOM 销毁重构，杜绝白屏闪烁)
    */
   public toggleModal(open?: boolean) {
-    this.isOpen = typeof open === 'boolean' ? open : !this.isOpen;
+    const nextOpen = typeof open === 'boolean' ? open : !this.isOpen;
+    if (this.isOpen === nextOpen && this.isNativeDom()) return;
+    this.isOpen = nextOpen;
     if (this.isOpen) {
       this.modalOpenedAt = Date.now();
     }
     this.submitFeedbackMessage = null;
-    this.render();
-    this.bindEvents();
+
+    // 局部极速切换模态框展开/隐藏状态 (零 DOM 销毁重构，保留所有子组件状态、输入值与事件，杜绝白屏闪烁)
+    const toggled = this.toggleModalDom(this.isOpen);
+    if (!toggled) {
+      this.render();
+      this.bindEvents();
+    }
     this.checkAndSyncPolling();
 
     if (this.isOpen && this.activeTab === 'history') {
       this.loadHistory();
     }
+  }
+
+  /**
+   * 原生局部模态框开关切换 (0 毫秒完成，零 DOM 销毁重构，保留所有子组件状态与事件，杜绝白屏闪烁)
+   */
+  private toggleModalDom(open: boolean): boolean {
+    if (!this.shadow) return false;
+    if (!this.isNativeDom()) return false;
+
+    const backdrop = this.shadow.querySelector?.('.modal-backdrop') as HTMLElement;
+    if (!backdrop) return false;
+
+    const container = this.shadow.querySelector?.('.modal-container') as HTMLElement;
+
+    if (open) {
+      if ((backdrop as any)._closeTimer) {
+        clearTimeout((backdrop as any)._closeTimer);
+        (backdrop as any)._closeTimer = null;
+      }
+      backdrop.style.display = 'flex';
+      void backdrop.offsetHeight;
+      backdrop.style.opacity = '1';
+      backdrop.classList.add('af-modal-open');
+      if (container) {
+        container.style.animation = 'none';
+        void container.offsetHeight;
+        container.style.animation = 'modal-pop 0.2s cubic-bezier(0.16, 1, 0.3, 1) both';
+      }
+      const activeBtn = this.shadow.querySelector?.('.tab-btn.active') as HTMLElement;
+      if (activeBtn) {
+        try {
+          activeBtn.scrollIntoView?.({ behavior: 'auto', block: 'nearest', inline: 'nearest' });
+        } catch (_) {}
+      }
+    } else {
+      backdrop.style.opacity = '0';
+      backdrop.classList.remove('af-modal-open');
+      if ((backdrop as any)._closeTimer) {
+        clearTimeout((backdrop as any)._closeTimer);
+      }
+      (backdrop as any)._closeTimer = setTimeout(() => {
+        if (!this.isOpen && backdrop.style) {
+          backdrop.style.display = 'none';
+        }
+      }, 220);
+    }
+    return true;
   }
 
   /**
@@ -1306,6 +1364,9 @@ export class AgentFeedbackWidget extends CustomElementBase {
       btn.classList?.remove?.('active');
       if (btn.classList?.contains?.(`tab-btn-${newTab}`)) {
         btn.classList?.add?.('active');
+        try {
+          btn.scrollIntoView?.({ behavior: 'smooth', block: 'nearest', inline: 'nearest' });
+        } catch (_) {}
       }
     });
 
@@ -2251,6 +2312,13 @@ export class AgentFeedbackWidget extends CustomElementBase {
         }
       });
     });
+
+    const activeBtn = this.shadow.querySelector?.('.tab-btn.active') as HTMLElement;
+    if (activeBtn) {
+      try {
+        activeBtn.scrollIntoView?.({ behavior: 'auto', block: 'nearest', inline: 'nearest' });
+      } catch (_) {}
+    }
   }
 
   /**
@@ -2574,17 +2642,25 @@ export class AgentFeedbackWidget extends CustomElementBase {
           100% { transform: scale(0.9); opacity: 0.8; }
         }
 
-        /* 模态框遮罩与弹窗 (采用顶部对齐与固定基准高度，确保在各 Tab 间切换时顶部标题栏与 Tab 栏永不上下跳动) */
+        /* 模态框遮罩与弹窗 (采用硬件加速平滑过渡，杜绝 DOM 销毁重构与白屏闪烁) */
         .modal-backdrop {
           position: fixed;
           inset: 0;
           z-index: 2147483645;
           background: rgba(0, 0, 0, 0.75);
+          -webkit-backdrop-filter: blur(8px);
           backdrop-filter: blur(8px);
           display: ${this.isOpen ? 'flex' : 'none'};
           align-items: flex-start;
           justify-content: center;
           padding: max(env(safe-area-inset-top, 0px) + 20px, 32px) 16px 16px;
+          opacity: ${this.isOpen ? '1' : '0'};
+          transition: opacity 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+          will-change: opacity;
+        }
+
+        .modal-backdrop.af-modal-open {
+          opacity: 1;
         }
 
         .modal-container {
@@ -2599,12 +2675,16 @@ export class AgentFeedbackWidget extends CustomElementBase {
           display: flex;
           flex-direction: column;
           overflow: hidden;
-          animation: modal-pop 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+          will-change: transform, opacity;
+          -webkit-backface-visibility: hidden;
+          backface-visibility: hidden;
+          transform: translateZ(0);
+          animation: modal-pop 0.2s cubic-bezier(0.16, 1, 0.3, 1) both;
         }
 
         @keyframes modal-pop {
-          from { opacity: 0; transform: scale(0.96) translateY(8px); }
-          to { opacity: 1; transform: scale(1) translateY(0); }
+          from { opacity: 0; transform: scale(0.96) translateY(8px) translateZ(0); }
+          to { opacity: 1; transform: scale(1) translateY(0) translateZ(0); }
         }
 
         /* 头部与 Tab 切换 (flex-shrink: 0 保证历史长列表滚动或加载时永不被压缩或截断) */
@@ -2648,26 +2728,33 @@ export class AgentFeedbackWidget extends CustomElementBase {
           display: flex;
           background: var(--af-bg-surface, #12151c);
           border-bottom: 1px solid var(--af-border, #222734);
-          padding: 0 16px;
-          gap: 12px;
+          padding: 0 8px;
+          gap: 4px;
           overflow-x: auto;
+          scrollbar-width: none;
+          -ms-overflow-style: none;
           -webkit-overflow-scrolling: touch;
+        }
+
+        .tabs::-webkit-scrollbar {
+          display: none;
         }
 
         .tab-btn {
           background: none;
           border: none;
           color: var(--af-text-muted, #9ca3af);
-          font-size: 13px;
+          font-size: 12px;
           font-weight: 600;
-          padding: 12px 6px;
+          padding: 10px 4px;
           cursor: pointer;
           position: relative;
           transition: color 0.2s;
           white-space: nowrap;
+          flex-shrink: 0;
           display: inline-flex;
           align-items: center;
-          gap: 6px;
+          gap: 3px;
         }
 
         .tab-btn.active {
@@ -3644,7 +3731,7 @@ export class AgentFeedbackWidget extends CustomElementBase {
       </div>
 
       <!-- 弹窗遮罩 -->
-      <div class="modal-backdrop">
+      <div class="modal-backdrop ${this.isOpen ? 'af-modal-open' : ''}">
         <div class="modal-container">
           <!-- 弹窗顶栏 -->
           <div class="modal-header">

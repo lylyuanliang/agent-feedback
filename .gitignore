@@ -13,3 +13,6 @@ docs/handoffs/
 scratch/
 .agent-feedback-secret
 RELEASE_NOTES.md
+
+# Local build release archives
+releases/

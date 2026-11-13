@@ -4,6 +4,23 @@
 
 ---
 
+## [1.4.1] - 2026-11-13
+
+### 🚀 移动端体验与渲染性能调优 (Zero-Flash & Mobile UX Enhancements)
+
+- **移动端与高刷新率 WebView 模态弹窗零闪烁优化 (Zero-Flash Native Modal Transitions)**
+  - 核心底层重构：`toggleModal` 引入原生局部切换 `toggleModalDom`，彻底废除打开/关闭时调用 `this.render(); this.bindEvents();` 重新生成 Shadow DOM 的机制，保留子组件状态与事件绑定，杜绝内联样式重新解析与首帧白屏闪烁；
+  - 渲染性能与硬件加速稳固：`.modal-container` 声明永久 GPU 独立图层加速（`transform: translateZ(0)`、`will-change: transform, opacity`、`-webkit-backface-visibility: hidden`）并将关键帧动画锚定为 `animation: modal-pop 0.2s cubic-bezier(0.16, 1, 0.3, 1) both`，彻底解决 Chromium 引擎在 200ms 动画结束时注销合成图层导致的底板背景纹理丢失与透明穿透闪烁；
+  - 遮罩层平滑过渡：`.modal-backdrop` 增加 `opacity: 0` ➔ `opacity: 1` 平滑 transition，消除瞬间黑屏；
+  - 运行时状态保持：修复 `setAccessControl` 与 `setHostChannel` 在模态框打开时不打断当前 DOM，修复 `openFeedbackModal(tab)` 优先设置 `setTab` 杜绝打开过程中的二次 Tab 切换抖动。
+
+- **顶部 Tab 选项卡自适应紧凑排版与选中项平滑居中 (Compact Tabs & Smooth Scroll)**
+  - `.tabs` 优化内边距与间距（`padding: 0 8px; gap: 4px;`），隐藏原生滚动条（`scrollbar-width: none; -ms-overflow-style: none; ::-webkit-scrollbar { display: none; }`），保持手势滑动手感；
+  - `switchTabDom`、`toggleModalDom` 与 `bindEvents` 增加选中态按钮平滑就地滚动居中（`scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'nearest' })`），杜绝小屏真机（360-390px 视口）边缘 Tab 文字被截断；
+  - `.tab-btn` 字体调整为 12px 并显式设置 `flex-shrink: 0`，防止极端小屏下标签按钮挤压变形，使得 4 个 Tab 在 369px 小屏 WebView 下总体积恰好 335px 自然全显。
+
+---
+
 ## [1.4.0] - 2026-11-05
 
 ### 🚀 重大核心特性 (Key Highlights)
