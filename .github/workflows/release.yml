@@ -27,7 +27,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: 24
 
       - name: Setup pnpm
         uses: pnpm/action-setup@v3
@@ -42,11 +42,27 @@ jobs:
 
       - name: Run tests
         run: |
-          pnpm --dir packages/core test
-          pnpm --dir packages/client test
-          pnpm --dir packages/sentinel test
-          pnpm --dir packages/vite-plugin test
-          pnpm --dir examples/vite-demo test
+          echo "## 🧪 Test Execution Summary" >> $GITHUB_STEP_SUMMARY
+          FAILED=0
+          for pkg in "packages/core" "packages/client" "packages/sentinel" "packages/vite-plugin" "examples/vite-demo"; do
+            echo "### Testing $pkg..." >> $GITHUB_STEP_SUMMARY
+            echo "=== Testing $pkg ==="
+            if pnpm --dir "$pkg" test 2>&1 | tee test_output.log; then
+              echo "✅ **$pkg**: Passed" >> $GITHUB_STEP_SUMMARY
+            else
+              echo "❌ **$pkg**: Failed" >> $GITHUB_STEP_SUMMARY
+              echo '```' >> $GITHUB_STEP_SUMMARY
+              tail -n 60 test_output.log >> $GITHUB_STEP_SUMMARY
+              echo '```' >> $GITHUB_STEP_SUMMARY
+              FAILED=1
+              break
+            fi
+            rm -f test_output.log
+          done
+          if [ $FAILED -ne 0 ]; then
+            echo "Test suite failed!"
+            exit 1
+          fi
 
       - name: Determine Version Tag
         id: vars
