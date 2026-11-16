@@ -41,7 +41,12 @@ jobs:
         run: pnpm -r run build
 
       - name: Run tests
-        run: pnpm -r run test
+        run: |
+          pnpm --dir packages/core test
+          pnpm --dir packages/client test
+          pnpm --dir packages/sentinel test
+          pnpm --dir packages/vite-plugin test
+          pnpm --dir examples/vite-demo test
 
       - name: Determine Version Tag
         id: vars
