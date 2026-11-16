@@ -7,7 +7,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { createRequire } from 'node:module';
-import { exec } from 'node:child_process';
+import { exec, spawn } from 'node:child_process';
 import { promisify } from 'node:util';
 import { sanitizeFeedbackContent } from '@lylyuanliang/agent-feedback-core';
 import type {
@@ -667,6 +667,56 @@ export function getAgentApiExecutable(): string {
 }
 
 /**
+ * 向 Antigravity 会话发送主动唤醒通知（保留完整换行格式与段落结构）
+ */
+export async function sendAntigravityMessage(convId: string, message: string): Promise<void> {
+  const home = os.homedir();
+  const winBat = path.join(home, '.gemini/antigravity/bin/agentapi.bat');
+
+  // Windows 环境优化：直接定位底层 language_server.exe，通过 spawn 参数数组直传，避免 cmd.exe /c 截断换行
+  if (process.platform === 'win32' && fs.existsSync(winBat)) {
+    try {
+      const batContent = fs.readFileSync(winBat, 'utf8');
+      const match = batContent.match(/"([^"]+language_server\.exe)"\s+agentapi/i);
+      if (match && fs.existsSync(match[1])) {
+        const lsExe = match[1];
+        await new Promise<void>((resolve, reject) => {
+          const child = spawn(lsExe, ['agentapi', 'send-message', convId, message], {
+            stdio: ['ignore', 'pipe', 'pipe'],
+            windowsHide: true
+          });
+          let errOutput = '';
+          child.stderr?.on('data', d => { errOutput += d.toString(); });
+          child.on('error', reject);
+          child.on('close', code => {
+            if (code === 0) resolve();
+            else reject(new Error(errOutput.trim() || `Process exited with code ${code}`));
+          });
+        });
+        return;
+      }
+    } catch (_) {}
+  }
+
+  // Unix 环境 / 通用回退：spawn 数组传参，天然完整保留换行
+  const nixBin = path.join(home, '.gemini/antigravity/bin/agentapi');
+  const bin = fs.existsSync(nixBin) ? nixBin : (process.platform === 'win32' && fs.existsSync(winBat) ? winBat : 'agentapi');
+  await new Promise<void>((resolve, reject) => {
+    const child = spawn(bin, ['send-message', convId, message], {
+      stdio: ['ignore', 'pipe', 'pipe'],
+      shell: process.platform === 'win32'
+    });
+    let errOutput = '';
+    child.stderr?.on('data', d => { errOutput += d.toString(); });
+    child.on('error', reject);
+    child.on('close', code => {
+      if (code === 0) resolve();
+      else reject(new Error(errOutput.trim() || `Process exited with code ${code}`));
+    });
+  });
+}
+
+/**
  * 自动检测并推断当前项目工作区对应的活跃 Antigravity 会话 ID
  * 1. 优先读取系统环境变量 ANTIGRAVITY_CONVERSATION_ID (智能体内部子进程环境)
  * 2. 外部终端自适应：读取 ~/.gemini/antigravity/conversation_summaries.db (通过 Node 原生 node:sqlite 零依赖检索)
@@ -882,16 +932,20 @@ export async function startSentinel(options: WatcherOptions = {}): Promise<void>
             log('[*] 🔔 触发 Antigravity 响应式唤醒机制...');
             const activeConvId = convId || options.conversationId || process.env.ANTIGRAVITY_CONVERSATION_ID || detectAntigravityConversation(storageDir || process.cwd());
             if (activeConvId) {
-              const summaryLines = processedBatch
-                .slice(0, 3)
-                .map(i => `[#${i.id}] ${i.content}`)
-                .join('; ');
-              const moreText = processedBatch.length > 3 ? ` 等共 ${processedBatch.length} 条` : '';
-              const wakeMsg = `📥 [Agent Feedback 自动唤醒] 捕获到端侧真实新反馈 (共 ${processedBatch.length} 条)：${summaryLines}${moreText}。请立即进入排查与自愈修复流程。`;
+              const formattedItems = processedBatch
+                .slice(0, 5)
+                .map((item, idx) => {
+                  const prefix = processedBatch.length > 1
+                    ? `• [#${item.id}] (第 ${idx + 1}/${processedBatch.length} 条):`
+                    : `[#${item.id}]:`;
+                  const cleanContent = (item.content || '').trim();
+                  return `${prefix}\n${cleanContent}`;
+                })
+                .join('\n\n');
+              const moreText = processedBatch.length > 5 ? `\n\n(其余 ${processedBatch.length - 5} 条反馈请查阅队列文件)` : '';
+              const wakeMsg = `📥 [Agent Feedback 自动唤醒] 捕获到端侧真实新反馈 (共 ${processedBatch.length} 条)：\n\n${formattedItems}${moreText}\n\n请立即进入排查与自愈修复流程。`;
               try {
-                const safeMsg = wakeMsg.replace(/"/g, '\\"').replace(/[\r\n]+/g, ' ');
-                const agentApiBin = getAgentApiExecutable();
-                await execAsync(`${agentApiBin} send-message ${activeConvId} "${safeMsg}"`);
+                await sendAntigravityMessage(activeConvId, wakeMsg);
                 log(`[*] 🚀 已通过 agentapi 向 Antigravity 会话 [${activeConvId}] 发送主动唤醒消息！`);
               } catch (apiErr: any) {
                 const rawError = (apiErr?.message || String(apiErr)).trim();
