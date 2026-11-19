@@ -295,7 +295,9 @@ agentFeedback({
 
 ### 4. 原生 Android WebView 容器集成要点 (Native Android WebView Hosting)
 
-如果您的 Android 应用是**纯原生架构（Pure Native Kotlin / Java）**并直接嵌入了系统的 `android.webkit.WebView` 容器（而非 Capacitor / Cordova 混合框架）：
+如果您的 Android 应用是**纯原生架构（Pure Native Kotlin / Java）**并直接嵌入了系统的 `android.webkit.WebView` 容器（例如 MantraKey 或各类轻量混合容器，而非 Capacitor / Cordova 框架）：
+
+> 📘 **深度集成指南**：关于底层原理剖析、多选解析、HyperOS/MIUI 临时访问权赋权、`filePathCallback` 生命周期防挂起及 `WebViewAssetLoader` 跨域配置，请参阅完整专题指南：[**《原生 Android WebView 容器深度集成指南 (Android Hybrid Integration Guide)》**](docs/integrations/android-webview-guide.md)。
 
 > [!IMPORTANT]
 > **原生 WebView 宿主必须显式重写 `WebChromeClient.onShowFileChooser`**<br>
