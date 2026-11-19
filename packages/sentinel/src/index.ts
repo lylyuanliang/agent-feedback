@@ -949,6 +949,7 @@ export async function startSentinel(options: WatcherOptions = {}): Promise<void>
                 // 开发者专属直出报错，不包装客套话
                 const errorReply = `[Agent 调度失败] ${rawError}`;
                 for (const item of processedBatch) {
+                  if (item.status === 'rejected') continue;
                   updateFeedbackStatus(storageDir, item.id, 'processing', errorReply);
                 }
               }
@@ -969,6 +970,7 @@ export async function startSentinel(options: WatcherOptions = {}): Promise<void>
                 warn(`[!] Webhook 请求发送异常: ${rawError}`);
                 const errorReply = `[Webhook 推送失败] ${rawError}`;
                 for (const item of processedBatch) {
+                  if (item.status === 'rejected') continue;
                   updateFeedbackStatus(storageDir, item.id, 'processing', errorReply);
                 }
               }
@@ -977,6 +979,7 @@ export async function startSentinel(options: WatcherOptions = {}): Promise<void>
               const tipMsg = '因未配置 webhookCommand 或 webhookUrl，未触发外部通知。';
               log(`[*] 💡 [Webhook 适配器提示] 批次已安全分诊并持久化。${tipMsg}`);
               for (const item of processedBatch) {
+                if (item.status === 'rejected') continue;
                 updateFeedbackStatus(storageDir, item.id, 'processing', `[调度未触发] ${tipMsg}`);
               }
             }
@@ -987,25 +990,30 @@ export async function startSentinel(options: WatcherOptions = {}): Promise<void>
           }
 
           if (adapter === 'antigravity') {
-            log('[*] 🔔 触发 Antigravity 响应式唤醒机制...');
-            const activeConvId = convId || options.conversationId || process.env.ANTIGRAVITY_CONVERSATION_ID || detectAntigravityConversation(storageDir || process.cwd());
-            if (activeConvId) {
-              const wakeMsg = buildWakeMessage(processedBatch);
-              try {
-                await sendAntigravityMessage(activeConvId, wakeMsg);
-                log(`[*] 🚀 已通过 agentapi 向 Antigravity 会话 [${activeConvId}] 发送主动唤醒消息！`);
-              } catch (apiErr: any) {
-                const rawError = (apiErr?.message || String(apiErr)).trim();
-                warn(`[!] agentapi 唤醒调用异常: ${rawError}`);
-                for (const item of processedBatch) {
-                  updateFeedbackStatus(storageDir, item.id, 'processing', `[agentapi 唤醒失败] ${rawError}`);
-                }
-              }
+            const actionableBatch = processedBatch.filter(i => i.status !== 'rejected');
+            if (actionableBatch.length === 0) {
+              log('[*] 批次内所有反馈均已被安全防线拦截 (rejected)，跳过智能体唤醒。');
             } else {
-              const tipMsg = '未能识别到活跃的 Antigravity 会话 ID，跳过 agentapi 发送。';
-              warn(`[!] ${tipMsg}`);
-              for (const item of processedBatch) {
-                updateFeedbackStatus(storageDir, item.id, 'processing', `[Antigravity 路由失败] ${tipMsg}`);
+              log('[*] 🔔 触发 Antigravity 响应式唤醒机制...');
+              const activeConvId = convId || options.conversationId || process.env.ANTIGRAVITY_CONVERSATION_ID || detectAntigravityConversation(storageDir || process.cwd());
+              if (activeConvId) {
+                const wakeMsg = buildWakeMessage(actionableBatch);
+                try {
+                  await sendAntigravityMessage(activeConvId, wakeMsg);
+                  log(`[*] 🚀 已通过 agentapi 向 Antigravity 会话 [${activeConvId}] 发送主动唤醒消息！`);
+                } catch (apiErr: any) {
+                  const rawError = (apiErr?.message || String(apiErr)).trim();
+                  warn(`[!] agentapi 唤醒调用异常: ${rawError}`);
+                  for (const item of actionableBatch) {
+                    updateFeedbackStatus(storageDir, item.id, 'processing', `[agentapi 唤醒失败] ${rawError}`);
+                  }
+                }
+              } else {
+                const tipMsg = '未能识别到活跃的 Antigravity 会话 ID，跳过 agentapi 发送。';
+                warn(`[!] ${tipMsg}`);
+                for (const item of actionableBatch) {
+                  updateFeedbackStatus(storageDir, item.id, 'processing', `[Antigravity 路由失败] ${tipMsg}`);
+                }
               }
             }
 

@@ -427,7 +427,7 @@ describe('Task 5: Integration Playground & End-to-End Verification (examples/vit
         storageDir,
         debounceMs: 50,
         pollIntervalMs: 20,
-        adapter: 'antigravity',
+        adapter: 'webhook', // 测试隔离：使用内部 webhook 避免向会话发送模拟测试唤醒
         silent: true,
         once: true,
         exitOnWakeup: false,
@@ -499,6 +499,7 @@ describe('Task 5: Integration Playground & End-to-End Verification (examples/vit
         storageDir,
         debounceMs: 50,
         pollIntervalMs: 20,
+        adapter: 'webhook', // 测试隔离：使用内部 webhook 避免向会话发送模拟攻击消息
         silent: true,
         once: true,
         exitOnWakeup: false

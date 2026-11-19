@@ -184,6 +184,7 @@ const {
   formatLocalDate,
   uploadMediaInChunks,
   isVideoMedia,
+  compressImage,
   AgentFeedbackWidget,
   registerAgentFeedbackWidget,
   autoMountWidget,
@@ -1016,5 +1017,82 @@ describe('@agent-feedback/client Access Control & Settings Management', () => {
     setApiBase('https://new-tunnel.cpolar.top');
     assert.strictEqual(getApiBase(), 'https://new-tunnel.cpolar.top');
     assert.strictEqual(mockLocalStorage.getItem('af_api_base'), 'https://new-tunnel.cpolar.top');
+  });
+
+  describe('@agent-feedback/client compressImage & Fault Resilience', () => {
+    it('should reject when file is not provided', async () => {
+      await assert.rejects(
+        async () => {
+          await compressImage(null as any);
+        },
+        { message: '未提供有效图片' }
+      );
+    });
+
+    it('should directly handle DataURL string input and gracefully fallback if Image is unavailable or fails', async () => {
+      const rawDataUrl = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==';
+      const result = await compressImage(rawDataUrl);
+      // 在 Node 测试环境中若无全局 Image 或加载失败，降级返回原始 DataURL，绝不丢弃
+      assert.strictEqual(typeof result, 'string');
+      assert.ok(result.length > 0);
+    });
+
+    it('should gracefully handle FileReader error and provide helpful error details', async () => {
+      // 模拟原生 Android URI 权限缺失导致 FileReader.onerror 触发
+      const originalFileReader = (globalThis as any).FileReader;
+      class MockFailingFileReader {
+        public onerror: ((ev: any) => any) | null = null;
+        public error = { name: 'SecurityError', message: 'Permission Denial: opening provider requires FLAG_GRANT_READ_URI_PERMISSION' };
+        readAsDataURL() {
+          setTimeout(() => {
+            if (this.onerror) {
+              this.onerror(new Event('error'));
+            }
+          }, 5);
+        }
+      }
+      (globalThis as any).FileReader = MockFailingFileReader;
+
+      try {
+        const mockBlob = new Blob(['fake content'], { type: 'image/jpeg' });
+        await assert.rejects(
+          async () => {
+            await compressImage(mockBlob);
+          },
+          (err: any) => {
+            assert.ok(err.message.includes('读取图片文件失败'));
+            assert.ok(err.message.includes('系统文件访问权限') || err.message.includes('Permission Denial'));
+            return true;
+          }
+        );
+      } finally {
+        (globalThis as any).FileReader = originalFileReader;
+      }
+    });
+
+    it('should gracefully fallback to raw DataURL if canvas compression fails', async () => {
+      const originalFileReader = (globalThis as any).FileReader;
+      const testDataUrl = 'data:image/jpeg;base64,/9j/4AAQSkZJRgABAQEASABIAAD/2wBDAP...';
+      class MockSuccessfulFileReader {
+        public onload: ((ev: any) => any) | null = null;
+        readAsDataURL() {
+          setTimeout(() => {
+            if (this.onload) {
+              this.onload({ target: { result: testDataUrl } });
+            }
+          }, 5);
+        }
+      }
+      (globalThis as any).FileReader = MockSuccessfulFileReader;
+
+      try {
+        const mockBlob = new Blob(['dummy'], { type: 'image/jpeg' });
+        const result = await compressImage(mockBlob);
+        // Canvas 降级或 Image 容错降级应当保全原始读取到的 DataURL
+        assert.strictEqual(result, testDataUrl);
+      } finally {
+        (globalThis as any).FileReader = originalFileReader;
+      }
+    });
   });
 });

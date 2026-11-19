@@ -643,28 +643,37 @@ export function formatLocalDate(item: Partial<InAppFeedback>): string {
 
 /**
  * 客户端轻量图片压缩引擎，将手机超大相片/截图自动缩放并压缩为轻量 JPEG (约 60KB~100KB)
+ * 具备多层容错与降级机制：
+ * 1. 若入参为 DataURL/URL 字符串，直接进入 Canvas 尺寸压缩，避免 FileReader 重复读取；
+ * 2. 若 Canvas 压缩失败（如 HEIC/特殊位图/画布绘制限制），自动降级回退原始 DataURL，绝不丢图；
+ * 3. 仅当系统沙箱权限拒绝或底层读取失败时抛出明确异常，供上层展示友好 UI 告警。
  */
-export async function compressImage(file: File | Blob, maxDim = 1200, quality = 0.75): Promise<string> {
+export async function compressImage(
+  file: File | Blob | string,
+  maxDim = 1200,
+  quality = 0.75
+): Promise<string> {
   return new Promise((resolve, reject) => {
-    if (!file) return reject(new Error('未提供有效图片'));
-    if (typeof FileReader === 'undefined') {
-      return reject(new Error('环境不支持 FileReader'));
+    if (!file) {
+      return reject(new Error('未提供有效图片'));
     }
 
-    const reader = new FileReader();
-    reader.onerror = () => reject(new Error('读取图片文件失败'));
-    reader.onload = (e) => {
-      const dataUrl = e.target?.result as string;
+    const processDataUrl = (dataUrl: string) => {
       if (typeof Image === 'undefined') {
         return resolve(dataUrl);
       }
 
       const img = new Image();
+      // 容错降级：如果 Image 加载失败（如不支持的特殊编码），降级返回原始 DataURL
       img.onerror = () => resolve(dataUrl);
       img.onload = () => {
         try {
           let width = img.naturalWidth || img.width;
           let height = img.naturalHeight || img.height;
+
+          if (!width || !height) {
+            return resolve(dataUrl);
+          }
 
           if (width > maxDim || height > maxDim) {
             if (width > height) {
@@ -680,7 +689,9 @@ export async function compressImage(file: File | Blob, maxDim = 1200, quality = 
           canvas.width = width;
           canvas.height = height;
           const ctx = canvas.getContext('2d');
-          if (!ctx) return resolve(dataUrl);
+          if (!ctx) {
+            return resolve(dataUrl);
+          }
 
           ctx.fillStyle = '#12151c';
           ctx.fillRect(0, 0, width, height);
@@ -689,12 +700,40 @@ export async function compressImage(file: File | Blob, maxDim = 1200, quality = 
           const compressed = canvas.toDataURL('image/jpeg', quality);
           resolve(compressed);
         } catch {
+          // Canvas 压缩异常时降级返回原始 dataUrl
           resolve(dataUrl);
         }
       };
       img.src = dataUrl;
     };
-    reader.readAsDataURL(file);
+
+    // 若传入的已是 DataURL 或图片 URL 字符串，直接进入处理
+    if (typeof file === 'string') {
+      return processDataUrl(file);
+    }
+
+    if (typeof FileReader === 'undefined') {
+      return reject(new Error('环境不支持 FileReader'));
+    }
+
+    const reader = new FileReader();
+    reader.onerror = () => {
+      const detail = reader.error ? ` (${reader.error.message || reader.error.name})` : '';
+      reject(new Error(`读取图片文件失败${detail}，请检查系统文件访问权限`));
+    };
+    reader.onload = (e) => {
+      const dataUrl = e.target?.result as string;
+      if (!dataUrl) {
+        return reject(new Error('读取图片内容为空'));
+      }
+      processDataUrl(dataUrl);
+    };
+
+    try {
+      reader.readAsDataURL(file);
+    } catch (err: any) {
+      reject(new Error(`无法读取图片文件: ${err?.message || err}`));
+    }
   });
 }
 
@@ -2008,6 +2047,9 @@ export class AgentFeedbackWidget extends CustomElementBase {
         const remaining = Math.max(0, 6 - (this.attachedScreenshots.length + this.attachedMedia.length));
         const filesToRead = files.slice(0, remaining);
 
+        let failedImagesCount = 0;
+        let lastImageError: any = null;
+
         for (const file of filesToRead) {
           const isVideo = file.type.startsWith('video/') || isVideoMedia(file.name);
           if (isVideo) {
@@ -2051,17 +2093,29 @@ export class AgentFeedbackWidget extends CustomElementBase {
             this.render();
             this.bindEvents();
           } else {
-            // 图片文件：走 Canvas 压缩引擎
+            // 图片文件：走 Canvas 压缩引擎（带多层容错降级与明确异常捕获）
             try {
               const compressed = await compressImage(file, 1200, 0.75);
               if (compressed) {
                 this.attachedScreenshots.push(compressed);
               }
-            } catch (err) {
-              console.error('[agent-feedback] Failed to compress screenshot file:', err);
+            } catch (err: any) {
+              failedImagesCount++;
+              lastImageError = err;
+              console.error('[agent-feedback] Failed to read or compress screenshot file:', file.name, err);
             }
           }
         }
+
+        if (failedImagesCount > 0) {
+          const reason = lastImageError?.message || '文件读取异常或未获得访问授权';
+          alert(`图片上传提示：有 ${failedImagesCount} 张图片读取失败，请检查文件系统访问权限。\n原因: ${reason}`);
+        }
+
+        // 清空 input 状态以允许用户重复选择同一张图片
+        try {
+          fileInput.value = '';
+        } catch {}
 
         this.render();
         this.bindEvents();
