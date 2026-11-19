@@ -293,7 +293,63 @@ agentFeedback({
 })
 ```
 
-### 4. 端侧访问授权门禁与配对密钥 (Access Control & Pairing Secret)
+### 4. 原生 Android WebView 容器集成要点 (Native Android WebView Hosting)
+
+如果您的 Android 应用是**纯原生架构（Pure Native Kotlin / Java）**并直接嵌入了系统的 `android.webkit.WebView` 容器（而非 Capacitor / Cordova 混合框架）：
+
+> [!IMPORTANT]
+> **原生 WebView 宿主必须显式重写 `WebChromeClient.onShowFileChooser`**<br>
+> 在 Android 系统的安全沙箱设计中，底层原生 `WebView` 默认会**直接忽略 `<input type="file">` 的点击事件**（既不报错也不弹系统选择器）。`agent-feedback` 运行在 Web 网页沙箱内部，点击“上传截图/录屏”时依赖宿主暴露的文件选择通道。<br>
+> 若宿主未重写该方法，点击上传按钮将毫无反应！
+
+#### 极简 Kotlin 宿主适配模板 (基于 AndroidX ActivityResultContracts)
+
+```kotlin
+import android.net.Uri
+import android.webkit.ValueCallback
+import android.webkit.WebChromeClient
+import android.webkit.WebView
+import androidx.appcompat.app.AppCompatActivity
+import androidx.activity.result.contract.ActivityResultContracts
+
+class MainActivity : AppCompatActivity() {
+    private var fileUploadCallback: ValueCallback<Array<Uri>>? = null
+
+    // 1. 注册系统媒体文件选择器
+    private val filePickerLauncher = registerForActivityResult(
+        ActivityResultContracts.GetContent()
+    ) { uri: Uri? ->
+        // 将选中的图片/视频 Uri 数组回传给 WebView
+        fileUploadCallback?.onReceiveValue(if (uri != null) arrayOf(uri) else null)
+        fileUploadCallback = null
+    }
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        val webView = findViewById<WebView>(R.id.webView)
+        webView.settings.javaScriptEnabled = true
+        webView.settings.domStorageEnabled = true
+
+        // 2. 👈 核心：重写 onShowFileChooser 捕获文件选择请求
+        webView.webChromeClient = object : WebChromeClient() {
+            override fun onShowFileChooser(
+                webView: WebView?,
+                filePathCallback: ValueCallback<Array<Uri>>?,
+                fileChooserParams: FileChooserParams?
+            ): Boolean {
+                this@MainActivity.fileUploadCallback = filePathCallback
+                filePickerLauncher.launch("image/*,video/*")
+                return true
+            }
+        }
+    }
+}
+```
+
+> [!TIP]
+> 混合框架（如 `@capacitor/android`）底层已自带 `BridgeWebChromeClient.onShowFileChooser` 实现，因此使用 Capacitor 的应用（如《每周一山》）无需手动编写上述代码。
+
+### 5. 端侧访问授权门禁与配对密钥 (Access Control & Pairing Secret)
 
 当开发机通过 cpolar / ngrok 等公网隧道对外暴露或面向移动端/分布式团队真机测试时，为防止未授权的外部匿名访问查看历史排查日志或提交恶意工单触发本地 Agent 执行，插件原生支持 **服务端安全门禁与动态密钥配对**：
 
@@ -387,7 +443,10 @@ if (isDebug) {
 
 ## 🔌 扩展槽功能指南 (Extension Tabs API)
 
-`@lylyuanliang/agent-feedback-client` 提供了灵活的 **扩展槽架构（Extension Tabs Workbench）**。
+`@lylyuanliang/agent-feedback-client` 提供了灵活的 **可插拔扩展槽架构（Pluggable Extension Tabs Workbench）**。
+
+> 💡 **想要了解内置核心插槽清单、显隐拔除规则与更多实战案例？**<br>
+> 欢迎查阅专属指南 ➔ [**《Agent Feedback 扩展槽与插拔式工作台指南 (Extension Tabs Cookbook)》**](docs/extension-tabs-cookbook.md)
 
 ### 💡 为什么需要扩展槽？
 在移动端测试真机或原生混合 App 中，开发者常常需要安装多个调试悬浮球（如 vConsole、网络切换器、离线包在线热更新、WakeLock 屏幕常亮保活等），导致**手机狭窄的屏幕上摆满各种浮动按钮，严重遮挡业务 UI**。
@@ -412,7 +471,9 @@ if (isDebug) {
 import {
   type FeedbackExtensionTab,
   type ExtensionContext,
-  registerExtensionTab
+  registerExtensionTab,
+  unregisterExtensionTab,
+  getRegisteredExtensionTabs
 } from '@lylyuanliang/agent-feedback-client';
 
 /**
