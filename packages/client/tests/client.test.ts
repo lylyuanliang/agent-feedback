@@ -197,7 +197,8 @@ const {
   deauthorize,
   computeSha256,
   setApiBase,
-  getApiBase
+  getApiBase,
+  initAgentFeedback
 } = await import('../src/index.ts');
 
 describe('@agent-feedback/client Full-Spectrum Telemetry Engine', () => {
@@ -820,6 +821,30 @@ describe('@agent-feedback/client Access Control & Settings Management', () => {
     const hc = getHostChannel();
     assert.strictEqual(hc.name, 'GitHub Issues');
     assert.strictEqual(hc.url, 'https://github.com/my-org/my-project/issues');
+  });
+
+  it('should initialize and configure client via initAgentFeedback()', () => {
+    initAgentFeedback({
+      appName: '我的测试App',
+      apiBase: 'https://test-tunnel.example.com',
+      accessControl: {
+        enabled: true,
+        accessKey: 'init-secret-key'
+      },
+      hostChannel: {
+        name: 'Official Forum',
+        url: 'https://forum.example.com'
+      },
+      theme: 'light',
+      showSettings: true
+    });
+
+    assert.strictEqual(getApiBase(), 'https://test-tunnel.example.com');
+    assert.strictEqual(getAccessControl().enabled, true);
+    assert.strictEqual(getAccessControl().accessKey, 'init-secret-key');
+    assert.strictEqual(getHostChannel().name, 'Official Forum');
+    assert.strictEqual((window as any).__AGENT_FEEDBACK_OPTIONS__?.appName, '我的测试App');
+    assert.strictEqual((window as any).__AGENT_FEEDBACK_OPTIONS__?.showSettings, true);
   });
 
   it('should accurately compute SHA-256 hash using Web Crypto API', async () => {

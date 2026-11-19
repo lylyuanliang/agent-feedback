@@ -491,6 +491,13 @@ export interface AgentFeedbackPluginOptions {
    * 宿主官方反馈与工单渠道配置
    */
   hostChannel?: HostChannelConfig;
+
+  /**
+   * 允许在构建打包 (vite build) 阶段注入客户端与配置
+   * 适用于移动端离线测试包、混合应用 Debug APK 或内测变体 (Staging/Debug Build)
+   * 默认 false (遵循生产环境 Zero-DCE 规范)
+   */
+  enableInBuild?: boolean;
 }
 
 /**
@@ -498,7 +505,7 @@ export interface AgentFeedbackPluginOptions {
  */
 export interface AgentFeedbackPlugin {
   name: string;
-  apply: 'serve' | 'build';
+  apply?: 'serve' | 'build' | ((config: any, env: any) => boolean);
   configResolved?: (config: any) => void;
   configureServer?: (server: any) => void;
   transformIndexHtml?: (html: string, ctx?: any) => any;
@@ -511,7 +518,7 @@ export type Plugin = AgentFeedbackPlugin;
 
 /**
  * 创建 Agent Feedback Vite 插件
- * 具备 100% Zero-DCE 特性：仅在 dev (serve) 模式生效，生产 build 零体积残留
+ * 具备 100% Zero-DCE 特性：默认仅在 dev (serve) 模式生效，生产 build 零体积残留
  */
 export function agentFeedback(options: AgentFeedbackPluginOptions = {}): AgentFeedbackPlugin {
   let isDev = true;
@@ -520,10 +527,20 @@ export function agentFeedback(options: AgentFeedbackPluginOptions = {}): AgentFe
   const defaultTheme: FeedbackTheme = options.theme || 'dark';
   const primaryColor = options.primaryColor;
 
+  // 感知当前是否允许在构建期生效 (Zero-DCE 保护：默认仅在 dev 生效，显式配置或环境变量启用测试包构建时放行)
+  const isBuildAllowed = Boolean(
+    options.enableInBuild ||
+    process.env.AGENT_FEEDBACK_BUILD === 'true' ||
+    process.env.VITE_ENABLE_DEBUG === 'true' ||
+    process.env.ENABLE_AGENT_FEEDBACK === 'true' ||
+    process.env.DEBUG_BUILD === 'true' ||
+    (typeof process !== 'undefined' && Array.isArray(process.argv) && process.argv.some(arg => arg === 'debug' || arg === 'staging' || arg.includes('mode=debug') || arg.includes('mode=staging')))
+  );
+
   return {
     name: 'agent-feedback-plugin',
-    // 关键架构：enforce 'serve'，保证在 vite build (生产打包) 时彻底被 Vite 剥离 (Zero-DCE)
-    apply: 'serve',
+    // 关键架构：若未显式启用离线测试构建，enforce 'serve'，保证在正式生产构建 (vite build) 时彻底被 Vite 剥离 (Zero-DCE)
+    apply: isBuildAllowed ? undefined : 'serve',
 
     configResolved(config: any) {
       if (config && typeof config.command === 'string') {
@@ -1159,10 +1176,37 @@ export function agentFeedback(options: AgentFeedbackPluginOptions = {}): AgentFe
     transformIndexHtml(html: string, ctx?: any) {
       const command = ctx?.command;
       const isBuild = command === 'build' || (!command && !isDev);
-      if (isBuild) return html;
+      if (isBuild && !isBuildAllowed) return html;
 
-      // 仅在 dev 模式自动在 HTML 中注入端侧客户端入口脚本
+      const safeAccessControl = resolvedAccessControl.enabled ? {
+        enabled: true,
+        keyHash: resolvedAccessControl.keyHash,
+        storageKey: resolvedAccessControl.storageKey || 'af_access_key',
+        promptTitle: resolvedAccessControl.promptTitle,
+        promptMessage: resolvedAccessControl.promptMessage
+      } : { enabled: false };
+
+      const optionsScript = `
+if (typeof window !== 'undefined') {
+  window.__AGENT_FEEDBACK_OPTIONS__ = {
+    theme: ${JSON.stringify(defaultTheme)},
+    primaryColor: ${primaryColor ? JSON.stringify(primaryColor) : 'undefined'},
+    apiBase: ${options.apiBase ? JSON.stringify(options.apiBase.trim().replace(/\/+$/, '')) : 'undefined'},
+    accessControl: ${JSON.stringify(safeAccessControl)},
+    hostChannel: ${options.hostChannel ? JSON.stringify(options.hostChannel) : 'undefined'},
+    showSettings: true,
+    ...(window.__AGENT_FEEDBACK_OPTIONS__ || {})
+  };
+}
+      `.trim();
+
+      // 在 dev 模式或启用了离线测试包构建时，注入全局配置脚本与端侧客户端入口脚本
       return [
+        {
+          tag: 'script',
+          children: optionsScript,
+          injectTo: 'head-prepend'
+        },
         {
           tag: 'script',
           attrs: {
@@ -1207,7 +1251,9 @@ if (typeof window !== 'undefined') {
     primaryColor: ${colorLiteral},
     apiBase: ${apiBaseLiteral},
     accessControl: ${accessControlLiteral},
-    hostChannel: ${hostChannelLiteral}
+    hostChannel: ${hostChannelLiteral},
+    showSettings: true,
+    ...(window.__AGENT_FEEDBACK_OPTIONS__ || {})
   };
   if (typeof document !== 'undefined') {
     const w = document.querySelector('agent-feedback-widget');

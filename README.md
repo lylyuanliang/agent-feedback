@@ -133,6 +133,46 @@ if (import.meta.env.DEV) {
 ```
 *(注：如果需要为移动端混合应用定制带有悬浮气泡的真机离线测试包，请参阅 ➔ [**《真机 Debug 变体与 Zero-DCE 原理》**](docs/production-zero-dce-and-debug-builds.md))*
 
+#### 📖 核心 API 规范：`initAgentFeedback(options?: ClientInitOptions)`
+
+`initAgentFeedback` 是端侧客户端的推荐标准初始化入口。无论是在 Web 开发模式还是在移动原生测试包（Debug APK）中，调用它都会：
+1. 自动注册并响应式更新 `apiBase`（DevServer 接口地址）；
+2. 自动配置安全授权门禁（`accessControl`）与宿主渠道（`hostChannel`）；
+3. 注入全局配置 `window.__AGENT_FEEDBACK_OPTIONS__`，并默认将 `showSettings` 设为 `true`（自动唤起端侧「⚙️ 联调设置」Tab）；
+4. 安全幂等挂载 `<agent-feedback-widget>`（支持 DOMContentLoaded 守候与动态热重载更新主题色彩）。
+
+**TypeScript 接口契约：**
+```typescript
+export interface ClientInitOptions {
+  /** 应用显示名称（展示在悬浮窗标题与遥测数据中，默认 'Agent Feedback'） */
+  appName?: string;
+  /** DevServer 接口基地址（跨局域网真机、公网穿透或移动混合离线包必填，如 'https://xxx.cpolar.top'） */
+  apiBase?: string;
+  /** 是否在端侧悬浮窗中展示「⚙️ 联调设置」Tab（默认为 true） */
+  showSettings?: boolean;
+  /** 访问控制与端侧授权门禁配置 */
+  accessControl?: AccessControlConfig;
+  /** 宿主官方反馈与工单渠道引导配置（未持有密钥时引导普通用户） */
+  hostChannel?: HostChannelConfig;
+  /** 自定义品牌主色调（支持 HEX / CSS 颜色，如 '#4edea3'） */
+  primaryColor?: string;
+  /** 组件设计系统主题模式（'dark' | 'light'，默认 'dark'） */
+  theme?: FeedbackTheme;
+}
+```
+
+**配置参数详解表：**
+
+| 参数项 | 类型 | 默认值 | 作用说明 |
+| :--- | :--- | :--- | :--- |
+| `appName` | `string` | `'Agent Feedback'` | 宿主业务应用名称，用于工单遥测识别与悬浮胶囊标题 |
+| `apiBase` | `string` | `undefined` (自动同源) | DevServer 服务的 HTTP 基地址。移动真机离线包或跨网穿透时传入 |
+| `showSettings` | `boolean` | `true` | 是否激活「⚙️ 联调设置」Tab。调用本函数时默认激活，方便真机扫码配对 |
+| `accessControl` | `AccessControlConfig` | `{ enabled: true }` | 授权门禁配置。开启后真机端提单与查单需输入配对密钥 |
+| `hostChannel` | `HostChannelConfig` | `undefined` | 宿主官方工单链接配置（如 GitHub Issues 页面），门禁拦截时展示备用引导 |
+| `primaryColor` | `string` | `'#4edea3'` | 自定义 CSS 主题色变量 `--af-primary`，与宿主设计系统统一风格 |
+| `theme` | `'dark' \| 'light'` | `'dark'` | 浮动面板色彩主题（深色极客黑曜石 / 浅色纯白明亮） |
+
 ### 步骤 3：在 `vite.config.ts` 启用插件与哨兵
 最简配置（以 Google Antigravity 为例）：
 ```typescript
@@ -255,7 +295,7 @@ agentFeedback({
 
 ### 4. 端侧访问授权门禁与配对密钥 (Access Control & Pairing Secret)
 
-当开发机通过 cpolar / ngrok 等公网隧道对外暴露或面向分布式团队公测时，为防止未授权的外部匿名访问查看历史排查日志或提交恶意工单触发本地 Agent 执行，插件原生支持 **服务端安全门禁与动态密钥配对**：
+当开发机通过 cpolar / ngrok 等公网隧道对外暴露或面向移动端/分布式团队真机测试时，为防止未授权的外部匿名访问查看历史排查日志或提交恶意工单触发本地 Agent 执行，插件原生支持 **服务端安全门禁与动态密钥配对**：
 
 #### 🛡️ 架构与安全防护设计
 * **默认开启与零样板代码**：在 v1.4.0+ 中，访问门禁为 **开箱即用、默认开启**（`accessControl.enabled = true`）。开发机首次启动时会自动在项目根目录创建未跟踪的密钥文件 `scratch/.agent-feedback-secret`（并在 `.gitignore` 中自动忽略），并安全加载；
@@ -263,9 +303,10 @@ agentFeedback({
 * **零明文下发原则**：客户端运行时仅接收密钥的 SHA-256 哈希值（`keyHash`），即便前端代码或移动离线包被反编译，也无法反解出开发机的原始配对密钥；
 * **远程与混合端（Capacitor/Hybrid）自适应校验**：对于 CI/CD 独立编译生成的 Debug APK（其本地编译时未生成 secret），在输入密钥后会自动请求开发机服务端（`/api/__agent_feedback/auth/verify`）进行远程比对，比对成功后即时持久化到本地并放行。
 
-#### ⚙️ 配置示例 (`vite.config.ts`)
+#### ⚙️ 编译与构建配置 (`vite.config.ts`)
 
-**默认开启（推荐，零配置）：**
+为了确保移动端离线测试包（Debug APK / 测试变体）在执行 `vite build` 时不丢失门禁配置与设置入口，请在插件中配置 `enableInBuild: true`：
+
 ```typescript
 import { defineConfig } from 'vite';
 import { agentFeedback } from '@lylyuanliang/agent-feedback-vite-plugin';
@@ -273,67 +314,275 @@ import { agentFeedback } from '@lylyuanliang/agent-feedback-vite-plugin';
 export default defineConfig({
   plugins: [
     agentFeedback({
-      storageDir: 'scratch/feedback'
-      // accessControl 默认开启，自动生成 scratch/.agent-feedback-secret
-    })
-  ]
-});
-```
-
-**若需显式关闭门禁（仅限纯内网安全环境）：**
-```typescript
-export default defineConfig({
-  plugins: [
-    agentFeedback({
       storageDir: 'scratch/feedback',
-      accessControl: { enabled: false } // 显式关闭门禁
+      enableInBuild: true,       // 👈 核心：放行测试变体打包，保留 window.__AGENT_FEEDBACK_OPTIONS__
+      accessControl: {
+        enabled: true           // 默认开启，自动生成 scratch/.agent-feedback-secret
+      }
     })
   ]
 });
 ```
 
-#### 🔑 开发者如何获取与配对密钥
-1. **查看本地密钥生成位置**：
-   - 启动 DevServer 后，插件会在项目根目录自动创建并写入密钥：**`scratch/.agent-feedback-secret`**；
-   - 亦可在启动命令前通过环境变量指定：`AGENT_FEEDBACK_SECRET=my-custom-token npm run dev`。
-2. **手机端/混合端配对**：
-   - 在端侧反馈悬浮窗中切换至 **「⚙️ 联调设置」** 面板；
-   - 在「受限访问门禁与身份凭证」输入框中输入上述密钥，点击 **「🔑 验证并保存授权」**；
-   - 验证通过后自动持久化至端侧 `localStorage`，历史面板与新建反馈立即解除受限！
+> [!TIP]
+> 亦可通过环境变量无侵入开启测试构建注入：`cross-env VITE_ENABLE_DEBUG=true vite build` 或 `AGENT_FEEDBACK_BUILD=true vite build`。未指定上述变量的标准生产构建将维持严格的 `apply: 'serve'`，保障 100% Zero-DCE 零残留。
+
+#### 📱 客户端初始化配置 (`main.ts`)
+
+在客户端入口通过 `initAgentFeedback` 显式开启门禁并指定开发机穿透地址：
+
+```typescript
+import { initAgentFeedback } from '@lylyuanliang/agent-feedback-client';
+
+// 仅在开发环境或测试调试包中初始化
+const isDebug = import.meta.env.DEV || import.meta.env.VITE_ENABLE_DEBUG === 'true';
+
+if (isDebug) {
+  initAgentFeedback({
+    appName: '我的App',
+    apiBase: 'https://my-tunnel.cpolar.top', // 开发者开发机的公网穿透地址或局域网 IP
+    accessControl: {
+      enabled: true                          // 👈 开启端侧授权配对门禁
+    },
+    hostChannel: {
+      name: 'GitHub Issues',
+      url: 'https://github.com/my-org/my-app/issues' // 未授权用户备用引导链接
+    }
+  });
+}
+```
+
+#### 🚪 端侧「⚙️ 联调设置」Tab 显隐机制
+
+为了保护内部开发端点，端侧悬浮面板中的 **「⚙️ 联调设置」Tab 具有严谨的感知显隐策略**：
+* **默认展示条件**：满足以下任一条件时，端侧面板会自动展示「⚙️ 联调设置」Tab：
+  1. 调用了 `initAgentFeedback()`（内部自动声明 `showSettings: true`）；
+  2. 配置了 `accessControl: { enabled: true }`（或传入了 `keyHash`）；
+  3. 配置了 `apiBase`（显式指定远程接口地址）；
+  4. 显式配置了 `showSettings: true` 或组件声明了 `<agent-feedback-widget show-settings="true">`；
+* **隐藏保护**：在未配置任何联调项的纯静态只读环境中，该 Tab 自动隐藏，避免无关人员察觉。
+
+#### 🔑 手把手真机配对实操 4 步指南
+
+```
+[① 电脑生成密钥] ➔ [② 手机打开胶囊] ➔ [③ 填写穿透地址与密钥] ➔ [④ 验证并解锁]
+```
+
+1. **第 1 步：获取开发机本地密钥**：
+   - 启动 DevServer 后，插件会在项目根目录自动创建并写入密钥文件：**`scratch/.agent-feedback-secret`**；
+   - 打开该文件复制内容（例如：`af_sec_7a8b9c...`）；亦可在启动前通过环境变量显式指定：`AGENT_FEEDBACK_SECRET=my-custom-key npm run dev`。
+2. **第 2 步：手机真机打开悬浮窗**：
+   - 在手机端打开 App，轻触右下角绿色悬浮胶囊展开控制台面板；
+   - 点击顶部导航栏最右侧的 **「⚙️ 联调设置」** Tab；
+3. **第 3 步：输入穿透地址与密钥**：
+   - 若离线包未预设 `apiBase`，在 **「DevServer 接口基地址」** 输入框中填写开发机穿透地址（如 `https://7a3bxxxx.cpolar.top` 或同一局域网 IP `http://192.168.1.100:5173`）；
+   - 在 **「受限访问门禁与身份凭证」** 输入框中粘贴第 1 步复制的密钥文本；
+4. **第 4 步：验证并持久化授权**：
+   - 点击 **「🔑 验证并保存授权」** 按钮；
+   - 客户端进行 SHA-256 校验或请求服务端 `/api/__agent_feedback/auth/verify`；
+   - 验证成功后提示 **「✅ 授权配对成功」**，密钥安全持久化至真机 `localStorage`（Key 为 `af_access_key`）；
+   - 历史工单受限遮罩瞬间解除，端侧可自由提交全息工单直连电脑端 AI Agent！
 
 ---
 
 ## 🔌 扩展槽功能指南 (Extension Tabs API)
 
-`@lylyuanliang/agent-feedback-client` 提供了灵活的扩展槽机制，允许宿主应用在同一个悬浮胶囊中挂载专属的开发者功能页签（如环境切换、离线包更新、通信诊断等），使移动端调试体验高度聚合，无需在界面上摆放多个悬浮按钮。
+`@lylyuanliang/agent-feedback-client` 提供了灵活的 **扩展槽架构（Extension Tabs Workbench）**。
 
-### 注册自定义扩展 Tab 示例
+### 💡 为什么需要扩展槽？
+在移动端测试真机或原生混合 App 中，开发者常常需要安装多个调试悬浮球（如 vConsole、网络切换器、离线包在线热更新、WakeLock 屏幕常亮保活等），导致**手机狭窄的屏幕上摆满各种浮动按钮，严重遮挡业务 UI**。
+
+通过扩展槽机制，宿主应用可以**将所有自定义调试工具无缝挂载为同一个悬浮胶囊内的独立 Tab**，打造统一的移动端开发者工作台（Unified Developer Hub）！
+
+```
+┌────────────────────────────────────────────────────────┐
+│  Agent Feedback 悬浮模态框 (Modal)                     │
+├───────────┬───────────┬───────────────┬────────────────┤
+│ 📝 提工单 │ 📜 历史   │ 📦 本地包更新  │ ⚙️ 联调设置   │ ◄── 扩展 Tab 无缝挂载
+├───────────┴───────────┴───────────────┴────────────────┤
+│                                                        │
+│   [ 宿主业务挂载的自定义调试面板 / 独立 Vue / React 组件 ]    │
+│                                                        │
+└────────────────────────────────────────────────────────┘
+```
+
+### 📋 核心类型定义与接口契约
+
+```typescript
+import {
+  type FeedbackExtensionTab,
+  type ExtensionContext,
+  registerExtensionTab
+} from '@lylyuanliang/agent-feedback-client';
+
+/**
+ * 模态框自定义扩展 Tab 定义
+ */
+export interface FeedbackExtensionTab {
+  /** 唯一标识符（不可重复，用于内部 Tab 路由与激活管理） */
+  id: string;
+  /** Tab 导航按钮上显示的文本标签（支持 Emoji） */
+  label: string;
+  /** 可选的前缀图标（支持 Emoji 或 SVG 图标字符串） */
+  icon?: string;
+  /** 可选的徽标角标提示（如更新计数或小红点） */
+  badge?: string | number;
+  /**
+   * 挂载渲染函数
+   * @param container Tab 内容区域的 DOM 容器（位于 Shadow DOM 内部独立的隔离沙箱中）
+   * @param context 扩展上下文对象，提供关闭弹层、跳转 Tab 与主题感知能力
+   * @returns 可选的清理函数（Tab 切换离开或模态框销毁时自动执行，用于卸载组件与回收定时器）
+   */
+  render: (container: HTMLElement, context: ExtensionContext) => void | (() => void);
+}
+
+/**
+ * 扩展槽执行上下文
+ */
+export interface ExtensionContext {
+  /** 程序化关闭反馈悬浮模态框 */
+  closeModal: () => void;
+  /** 程序化切换至指定 Tab（如 'submit', 'history', 'settings' 或其他扩展 Tab ID） */
+  openTab: (tabId: string) => void;
+  /** 当前组件的主题色彩模式（'dark' | 'light'） */
+  theme: string;
+}
+```
+
+### ⚙️ 参数规范详解
+
+| 字段名 | 类型 | 必填 | 说明 |
+| :--- | :--- | :---: | :--- |
+| `id` | `string` | **是** | 扩展页签全局唯一 ID，重复注册同 ID 会安全替换旧 Tab |
+| `label` | `string` | **是** | 顶部导航栏展示的按钮文字（建议简明，如 `'本地包'` 或 `'网络诊断'`） |
+| `icon` | `string` | 否 | 页签图标，推荐单个 Emoji（如 `'📦'`、`'🛠️'`）或内联 SVG 标签 |
+| `badge` | `string \| number` | 否 | 页签右上角数字或红点（如新版本提示 `badge: 'NEW'` 或更新数量 `badge: 1`） |
+| `render` | `Function` | **是** | 核心生命周期函数。**其返回的 Cleanup 函数至关重要**，务必在此解绑事件与卸载组件，防止内存泄漏 |
+
+---
+
+### 💻 实战代码示例
+
+#### 示例 A：原生 JavaScript / DOM 快速挂载（零依赖、轻量级）
 
 ```typescript
 import { registerExtensionTab } from '@lylyuanliang/agent-feedback-client';
-import { createApp } from 'vue'; // 支持 Vue / React / 原生 HTML
-import MyCustomDebugPanel from './components/MyCustomDebugPanel.vue';
 
-if (import.meta.env.DEV) {
-  registerExtensionTab({
-    id: 'my-custom-tools',            // 唯一 ID
-    label: '🛠️ 联调与工具',             // Tab 显示文本 (支持 Emoji 或图标)
-    render(container, context) {
-      // 挂载 Vue 组件
-      const app = createApp(MyCustomDebugPanel, {
-        onClose: context.closeModal,
-        onSwitchTab: context.openTab
-      });
-      app.mount(container);
+registerExtensionTab({
+  id: 'device-info',
+  label: '设备状态',
+  icon: '📱',
+  render(container, context) {
+    // 1. 创建 UI 结构
+    container.innerHTML = `
+      <div style="padding: 16px; color: inherit;">
+        <h3 style="margin-top: 0;">📱 设备即时传感器</h3>
+        <p>网络状态: <span id="net-status">${navigator.onLine ? '🟢 在线' : '🔴 离线'}</span></p>
+        <p>当前主题: <b>${context.theme}</b></p>
+        <button id="close-btn" style="padding: 8px 16px; border-radius: 8px; cursor: pointer;">
+          完成并关闭
+        </button>
+      </div>
+    `;
 
-      // 返回清理回调
-      return () => {
-        app.unmount();
-      };
-    }
-  });
-}
+    // 2. 绑定事件与定时器
+    const timer = setInterval(() => {
+      const el = container.querySelector('#net-status');
+      if (el) el.textContent = navigator.onLine ? '🟢 在线' : '🔴 离线';
+    }, 1000);
+
+    const closeBtn = container.querySelector('#close-btn');
+    closeBtn?.addEventListener('click', () => {
+      context.closeModal(); // 程序化关闭模态框
+    });
+
+    // 3. 关键：返回 Cleanup 回调函数，Tab 切换离开时自动回收资源
+    return () => {
+      clearInterval(timer);
+    };
+  }
+});
 ```
+
+#### 示例 B：Vue 3 单文件组件挂载与销毁（推荐，如每周一山真实工程）
+
+```typescript
+import { createApp } from 'vue';
+import { registerExtensionTab } from '@lylyuanliang/agent-feedback-client';
+import AlpineDevApkExtensionView from '@/components/debug/AlpineDevApkExtensionView.vue';
+
+// 遵循 FeedbackExtensionTab 规范
+export const alpineDevApkTab = {
+  id: 'alpine-dev-apk',
+  label: '本地包',
+  icon: '📦',
+  badge: 'v1.4',
+  render(container, context) {
+    // 1. 动态创建独立的 Vue 子应用实例，注入上下文 Props
+    const app = createApp(AlpineDevApkExtensionView, {
+      theme: context.theme,
+      onClose: context.closeModal,
+      onNavigateToHistory: () => context.openTab('history')
+    });
+
+    // 若需要使用 Pinia 或 Vue Router，可在此 app.use(pinia)
+    app.mount(container);
+
+    // 2. 关键：返回卸载清理函数，避免切换 Tab 产生残留
+    return () => {
+      app.unmount();
+    };
+  }
+};
+
+// 注册扩展 Tab
+registerExtensionTab(alpineDevApkTab);
+```
+
+#### 示例 C：React 18 组件挂载与卸载
+
+```typescript
+import React from 'react';
+import { createRoot } from 'react-dom/client';
+import { registerExtensionTab } from '@lylyuanliang/agent-feedback-client';
+import NetworkInspector from './NetworkInspector';
+
+registerExtensionTab({
+  id: 'network-inspector',
+  label: '接口抓包',
+  icon: '🌐',
+  render(container, context) {
+    const root = createRoot(container);
+    root.render(
+      <NetworkInspector
+        theme={context.theme}
+        onClose={context.closeModal}
+        onJumpToSettings={() => context.openTab('settings')}
+      />
+    );
+
+    // 返回清理函数
+    return () => {
+      root.unmount();
+    };
+  }
+});
+```
+
+#### 示例 D：程序化呼出扩展 Tab
+
+除了用户手动轻触 Tab 切换外，宿主业务代码还可通过全局函数直接呼出指定扩展面板：
+
+```typescript
+import { openFeedbackModal } from '@lylyuanliang/agent-feedback-client';
+
+// 在业务个人中心或关于页面的“检查本地安装包”按钮中：
+document.getElementById('check-apk-btn')?.addEventListener('click', () => {
+  // 直接呼出并切换到指定 id 的扩展 Tab
+  openFeedbackModal('alpine-dev-apk');
+});
+```
+
 
 ---
 

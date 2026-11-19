@@ -4,6 +4,27 @@
 
 ---
 
+## [1.5.0] - 2026-11-19
+
+### 🚀 核心 API 规范与移动端离线测试变体支持 (Standardized Client API & Offline Test Builds)
+
+- **`@lylyuanliang/agent-feedback-client` 补齐官方核心导出函数 `initAgentFeedback`**
+  - 新增并导出 `initAgentFeedback(options: ClientInitOptions)` 标准初始化入口，解决调用方按文档调用抛出 `TypeError: initAgentFeedback is not a function` 缺陷；
+  - 自动管理选项装配：自动设置 `apiBase`、`accessControl`、`hostChannel`、`primaryColor` 与 `theme`，默认启用 `showSettings: true` 唤起端侧「⚙️ 联调设置」Tab，并幂等执行 `autoMountWidget()` 确保 DOM 就绪；
+  - 增强 `AgentFeedbackWidget.prototype.refreshWidget()` 支持动态响应式重载 API 基地址与品牌主色调。
+
+- **`@lylyuanliang/agent-feedback-vite-plugin` 支持移动端离线测试包构建注入 (`enableInBuild`)**
+  - 新增 `enableInBuild?: boolean` 配置项与智能环境变量感知（`VITE_ENABLE_DEBUG`、`AGENT_FEEDBACK_BUILD`、`DEBUG_BUILD`、`--mode debug/staging`）；
+  - 测试变体打包时放行插件（解除 `apply: 'serve'` 限制），在 `transformIndexHtml` 中安全注入脱敏的 `window.__AGENT_FEEDBACK_OPTIONS__` 与客户端入口；普通生产构建严格维持 `apply: 'serve'` 守住 100% Zero-DCE；
+  - 修复 HTML 内联脚本中错误的 TypeScript 类型断言语法，确保所有浏览器与 WebView 原生解析无语法错误。
+
+- **文档体系系统性升级与补全 (Comprehensive Documentation)**
+  - 补全 `initAgentFeedback` 参数规范、TypeScript 接口契约与配置详解；
+  - 深度扩充 `registerExtensionTab` 扩展槽插件机制：阐述 `FeedbackExtensionTab` 与 `ExtensionContext` 契约规范，详解 Cleanup 回调销毁机制，提供原生 DOM、Vue 3 SFC 及 React 18 三套完整实战示例；
+  - 补充移动端真机配对门禁配置指南与手把手 4 步配对实操全流程。
+
+---
+
 ## [1.4.1] - 2026-11-13
 
 ### 🚀 移动端体验与渲染性能调优 (Zero-Flash & Mobile UX Enhancements)

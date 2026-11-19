@@ -38,16 +38,26 @@
 ### 防线 1：插件级生命周期物理隔离 (`apply: 'serve'`)
 在 `@lylyuanliang/agent-feedback-vite-plugin` 源码中，声明了构建契约：
 ```typescript
-export function agentFeedback(): Plugin {
+export function agentFeedback(options?: AgentFeedbackPluginOptions): Plugin {
+  // 智能环境感知：默认生产打包锁定 'serve'，仅在显式配置 enableInBuild 或测试环境变量时放行
+  const isBuildAllowed = Boolean(
+    options.enableInBuild ||
+    env.AGENT_FEEDBACK_BUILD === 'true' ||
+    env.VITE_ENABLE_DEBUG === 'true' ||
+    env.ENABLE_AGENT_FEEDBACK === 'true' ||
+    env.DEBUG_BUILD === 'true'
+  );
+
   return {
     name: '@agent-feedback/vite-plugin',
-    apply: 'serve', // 👈 关键契约：仅在开发模式 (vite dev / serve) 下激活
+    apply: isBuildAllowed ? undefined : 'serve', // 👈 关键契约：生产模式下由 Vite 引擎直接丢弃
     // ...
   };
 }
 ```
-* **工作机制**：`apply: 'serve'` 是 Vite 标准插件体系的核心属性。当你执行生产打包（`vite build`）时，Vite 在加载插件的第一阶段就会**直接彻底无视并丢弃该插件**；
-* **物理结果**：生产构建中**完全不存在**该插件注册的 Connect 中间件路由（`/api/__agent_feedback/*`）、后台哨兵监听进程以及 HTML 脚本注入逻辑。
+* **工作机制**：`apply: 'serve'` 是 Vite 标准插件体系的核心属性。当你执行标准生产打包（`vite build`）时，Vite 在加载插件的第一阶段就会**直接彻底无视并丢弃该插件**；
+* **物理结果**：生产构建中**完全不存在**该插件注册的 Connect 中间件路由（`/api/__agent_feedback/*`）、后台哨兵监听进程以及 HTML 脚本注入逻辑；
+* **测试构建放行机制**：仅在插件中配置了 `enableInBuild: true`，或存在 `VITE_ENABLE_DEBUG=true` 等内测环境变量时，插件才会放行（`apply: undefined`），在 `vite build` 产物中注入 `window.__AGENT_FEEDBACK_OPTIONS__` 与客户端入口脚本，保障真机测试包正常挂载。
 
 ### 防线 2：编译器 AST 常量替换与死代码消除 (Dead-Code Elimination)
 在官方推荐的前端接入写法中：
@@ -106,12 +116,30 @@ if (isDebug) {
   initAgentFeedback({
     appName: '我的App',
     // 💡 关键：脱离电脑局域网时，真机通过公网穿透地址提交工单给电脑哨兵
-    apiBase: import.meta.env.VITE_FEEDBACK_API_BASE || undefined
+    apiBase: import.meta.env.VITE_FEEDBACK_API_BASE || undefined,
+    accessControl: { enabled: true } // 开启端侧授权配对门禁
   });
 }
 ```
 
-#### 2. 环境配置分型示例：
+#### 2. Vite 插件配置 (`vite.config.ts`)：
+```typescript
+import { defineConfig } from 'vite';
+import { agentFeedback } from '@lylyuanliang/agent-feedback-vite-plugin';
+
+export default defineConfig({
+  plugins: [
+    agentFeedback({
+      storageDir: 'scratch/feedback',
+      // 开启 enableInBuild 或通过 VITE_ENABLE_DEBUG 环境变量感知
+      enableInBuild: process.env.VITE_ENABLE_DEBUG === 'true',
+      accessControl: { enabled: true }
+    })
+  ]
+});
+```
+
+#### 3. 环境配置分型示例：
 * **日常开发 / 内测测试环境（如 `.env` 或 `.env.staging`）**：
   ```properties
   VITE_ENABLE_DEBUG=true
@@ -123,7 +151,7 @@ if (isDebug) {
   VITE_FEEDBACK_API_BASE=
   ```
 
-#### 3. 触发方式（依据团队习惯自行命名）：
+#### 4. 触发方式（依据团队习惯自行命名）：
 ```bash
 # 示例 1：通过 Vite 的 mode 切换
 vite build --mode staging     # 打出带悬浮球的内测包 (VITE_ENABLE_DEBUG=true)

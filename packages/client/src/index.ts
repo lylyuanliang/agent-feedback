@@ -1103,6 +1103,14 @@ export class AgentFeedbackWidget extends CustomElementBase {
     if (globalHC && Object.keys(globalHC).length > 0) {
       this.hostChannelConfig = { ...this.hostChannelConfig, ...globalHC };
     }
+    const curApi = getApiBase();
+    if (curApi) {
+      this.apiBase = curApi;
+    }
+    const injectedOptions = typeof window !== 'undefined' ? (window as any).__AGENT_FEEDBACK_OPTIONS__ : undefined;
+    if (injectedOptions?.primaryColor && (this as any).style) {
+      (this as any).style.setProperty('--af-primary', injectedOptions.primaryColor);
+    }
     this.render();
     this.bindEvents();
   }
@@ -4086,6 +4094,49 @@ export function autoMountWidget(): void {
   } else {
     mount();
   }
+}
+
+/**
+ * 客户端显式初始化选项
+ */
+export interface ClientInitOptions {
+  appName?: string;
+  apiBase?: string;
+  showSettings?: boolean;
+  accessControl?: AccessControlConfig;
+  hostChannel?: HostChannelConfig;
+  primaryColor?: string;
+  theme?: FeedbackTheme;
+  [key: string]: any;
+}
+
+/**
+ * 显式初始化并配置 Agent Feedback 客户端
+ * 解决离线构建/测试包中配置透传与官方文档 API 契约一致性
+ */
+export function initAgentFeedback(options: ClientInitOptions = {}): void {
+  if (options.apiBase) setApiBase(options.apiBase);
+  if (options.accessControl) setAccessControl(options.accessControl);
+  if (options.hostChannel) setHostChannel(options.hostChannel);
+  if (options.theme) {
+    AgentFeedbackWidget.setTheme(options.theme);
+  }
+  if (options.primaryColor && typeof document !== 'undefined') {
+    const widgets = document.querySelectorAll('agent-feedback-widget');
+    widgets.forEach((w: any) => {
+      if (w.style) {
+        w.style.setProperty('--af-primary', options.primaryColor);
+      }
+    });
+  }
+  if (typeof window !== 'undefined') {
+    (window as any).__AGENT_FEEDBACK_OPTIONS__ = {
+      showSettings: true, // 只要显式初始化或配置，默认允许展示设置
+      ...((window as any).__AGENT_FEEDBACK_OPTIONS__ || {}),
+      ...options
+    };
+  }
+  autoMountWidget();
 }
 
 // 浏览器环境中自动初始化

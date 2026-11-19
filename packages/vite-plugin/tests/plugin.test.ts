@@ -190,6 +190,66 @@ describe('@agent-feedback/vite-plugin Architecture & Zero-DCE', () => {
     plugin.configureServer?.(mockServer);
     assert.strictEqual(mockServer.middlewares.handlers.length, 0);
   });
+
+  it('should allow options and client script injection during build when enableInBuild is true', () => {
+    const plugin = agentFeedback({
+      enableInBuild: true,
+      accessControl: {
+        enabled: true,
+        accessKey: 'build-offline-key'
+      }
+    });
+
+    // 当显式开启测试包构建时，apply 为 undefined 确保 Vite 在 build 阶段正常执行该插件
+    assert.strictEqual(plugin.apply, undefined);
+
+    if (plugin.configResolved) {
+      plugin.configResolved({ command: 'build' });
+    }
+
+    const html = '<html><head></head><body><div id="app"></div></body></html>';
+    const tags = plugin.transformIndexHtml?.(html, { command: 'build' });
+
+    assert.ok(Array.isArray(tags), 'transformIndexHtml should return tag array when enableInBuild is true');
+    const optionsTag = tags.find((t: any) => typeof t.children === 'string' && t.children.includes('window.__AGENT_FEEDBACK_OPTIONS__'));
+    assert.ok(optionsTag, 'Should inject window.__AGENT_FEEDBACK_OPTIONS__ script in head-prepend');
+    assert.strictEqual(optionsTag.injectTo, 'head-prepend');
+    assert.ok(optionsTag.children.includes('showSettings: true'));
+    assert.ok(optionsTag.children.includes('accessControl'));
+
+    const clientScript = tags.find((t: any) => t.attrs?.src === '/@agent-feedback/client');
+    assert.ok(clientScript, 'Should inject client script tag even in build when enableInBuild is true');
+  });
+
+  it('should allow build injection when VITE_ENABLE_DEBUG=true environment variable is set', () => {
+    const origEnv = process.env.VITE_ENABLE_DEBUG;
+    process.env.VITE_ENABLE_DEBUG = 'true';
+    try {
+      const plugin = agentFeedback({
+        accessControl: {
+          enabled: true,
+          accessKey: 'env-test-key'
+        }
+      });
+      assert.strictEqual(plugin.apply, undefined);
+
+      if (plugin.configResolved) {
+        plugin.configResolved({ command: 'build' });
+      }
+
+      const html = '<html><head></head><body><div id="app"></div></body></html>';
+      const tags = plugin.transformIndexHtml?.(html, { command: 'build' });
+      assert.ok(Array.isArray(tags));
+      const optionsTag = tags.find((t: any) => typeof t.children === 'string' && t.children.includes('window.__AGENT_FEEDBACK_OPTIONS__'));
+      assert.ok(optionsTag);
+    } finally {
+      if (origEnv !== undefined) {
+        process.env.VITE_ENABLE_DEBUG = origEnv;
+      } else {
+        delete process.env.VITE_ENABLE_DEBUG;
+      }
+    }
+  });
 });
 
 describe('@agent-feedback/vite-plugin Dev Server Virtual Module Injection', () => {
