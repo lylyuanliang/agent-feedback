@@ -4,6 +4,18 @@
 
 ---
 
+## [1.5.1] - 2026-11-19
+
+### 🐛 问题修复 (Bugfixes)
+
+- **`@lylyuanliang/agent-feedback-sentinel` 修复智能体唤醒消息 Markdown 语法吞噬与多行软折叠缺陷**
+  - **消除 Link Reference Definition 隐式语法吞噬**：重构唤醒排版格式，将工单标题前缀由 `[#ID]:` 升级为 `**📌 反馈工单 #ID**：`，彻底杜绝 CommonMark/GFM 渲染器将工单编号误识别为链接引用定义并将首行内容作为 URL 目标不可见吞噬的问题；
+  - **保障多行分点内容独立换行展示**：反馈正文提取逐行解析，在每行首部包裹 Markdown 引用块（`> `）并在行末强制注入双空格（`  `）硬换行符，彻底防止多行分点反馈（如 `1...\n2...\n3...`）在 Markdown 段落渲染时被软折叠合并为一行；
+  - **提取模块化排版工具函数**：导出 `formatFeedbackForWakeMessage` 与 `buildWakeMessage`，并支持优雅透传页面路由（`route`）、客户端平台（`platform`）以及媒体/截图附件数量摘要；
+  - **单元测试覆盖**：在 `sentinel.test.ts` 中补充 6 组自动化单元测试，全面验证 Link Definition 防御、多行内容独立保留、批次索引及元数据摘要透传。
+
+---
+
 ## [1.5.0] - 2026-11-19
 
 ### 🚀 核心 API 规范与移动端离线测试变体支持 (Standardized Client API & Offline Test Builds)

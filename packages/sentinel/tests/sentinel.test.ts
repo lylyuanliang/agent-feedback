@@ -17,7 +17,9 @@ import {
   insertNotice,
   getLocalDateString,
   detectAntigravityConversation,
-  getAgentApiExecutable
+  getAgentApiExecutable,
+  formatFeedbackForWakeMessage,
+  buildWakeMessage
 } from '../src/index.ts';
 import type { InAppFeedback } from '../src/index.ts';
 
@@ -574,5 +576,105 @@ describe('@agent-feedback/sentinel - CLI Entrypoint (bin/cli.js)', () => {
     }
     const exe = getAgentApiExecutable();
     assert.ok(typeof exe === 'string' && exe.length > 0);
+  });
+
+  describe('Markdown Safe Wakeup Message Formatting (Anti-Swallowing & Multiline Preservation)', () => {
+    it('should format multiline feedback with blockquote and trailing double spaces for hard breaks', () => {
+      const item = createSampleFeedback({
+        id: 1795074099029,
+        content: `1反馈时，点击“上传截图/录屏”，点了没反应\n2功能界面，主要功能“生成密码”这些应该放最上面吧，为啥放在了最下面\n3接管手机系统密码填充服务以及打穿银行类app键盘默认关闭`
+      });
+
+      const formatted = formatFeedbackForWakeMessage(item, 0, 1);
+
+      // 绝不使用 [#ID]: 避免触发 Markdown Link Reference Definition
+      assert.strictEqual(formatted.includes('[#1795074099029]:'), false);
+      assert.ok(formatted.includes('**📌 反馈工单 #1795074099029**：'));
+
+      // 验证每一行都带有引用块 > 且行末保留双空格硬换行
+      const lines = formatted.split('\n');
+      const contentLine1 = lines.find(l => l.includes('1反馈时'));
+      const contentLine2 = lines.find(l => l.includes('2功能界面'));
+      const contentLine3 = lines.find(l => l.includes('3接管手机系统'));
+
+      assert.ok(contentLine1 && contentLine1.startsWith('> 1反馈时') && contentLine1.endsWith('  '));
+      assert.ok(contentLine2 && contentLine2.startsWith('> 2功能界面') && contentLine2.endsWith('  '));
+      assert.ok(contentLine3 && contentLine3.startsWith('> 3接管手机系统') && contentLine3.endsWith('  '));
+    });
+
+    it('should build complete wake message for single item without link reference definition vulnerability', () => {
+      const item = createSampleFeedback({
+        id: 1001,
+        content: '简短单行反馈'
+      });
+
+      const msg = buildWakeMessage([item]);
+
+      assert.ok(msg.includes('📥 [Agent Feedback 自动唤醒] 捕获到端侧真实新反馈 (共 1 条)：'));
+      assert.ok(msg.includes('**📌 反馈工单 #1001**：'));
+      assert.ok(msg.includes('> 简短单行反馈  '));
+      assert.ok(!msg.includes('[#1001]:'));
+      assert.ok(msg.includes('请立即进入排查与自愈修复流程。'));
+    });
+
+    it('should format multiple item batch with correct indexing', () => {
+      const item1 = createSampleFeedback({ id: 1001, content: '第一条反馈' });
+      const item2 = createSampleFeedback({ id: 1002, content: '第二条反馈' });
+
+      const msg = buildWakeMessage([item1, item2]);
+
+      assert.ok(msg.includes('共 2 条'));
+      assert.ok(msg.includes('**📌 反馈工单 #1001** (1/2)：'));
+      assert.ok(msg.includes('**📌 反馈工单 #1002** (2/2)：'));
+      assert.ok(msg.includes('> 第一条反馈  '));
+      assert.ok(msg.includes('> 第二条反馈  '));
+    });
+
+    it('should include telemetry route, platform and media count in metadata block', () => {
+      const item = createSampleFeedback({
+        id: 2001,
+        content: '相册权限异常',
+        telemetry: {
+          route: '/album/select',
+          viewport: { width: 412, height: 915, dpr: 2.625 },
+          userAgent: 'Android',
+          platform: 'android'
+        },
+        media: [
+          { type: 'image', url: '/api/media/1.png' },
+          { type: 'video', url: '/api/media/2.mp4' }
+        ]
+      });
+
+      const formatted = formatFeedbackForWakeMessage(item, 0, 1);
+
+      assert.ok(formatted.includes('📍 路由: `/album/select`'));
+      assert.ok(formatted.includes('📱 平台: android'));
+      assert.ok(formatted.includes('📎 附件: 2 个媒体文件'));
+    });
+
+    it('should handle empty or whitespace content gracefully', () => {
+      const item = createSampleFeedback({
+        id: 3001,
+        content: '   \n  \n  '
+      });
+
+      const formatted = formatFeedbackForWakeMessage(item, 0, 1);
+      assert.ok(formatted.includes('> *(无文字描述)*'));
+    });
+
+    it('should cap wake message at 5 items and append remaining count', () => {
+      const batch: InAppFeedback[] = Array.from({ length: 8 }, (_, i) =>
+        createSampleFeedback({ id: 5000 + i, content: `反馈批次第 ${i + 1} 项` })
+      );
+
+      const msg = buildWakeMessage(batch);
+
+      assert.ok(msg.includes('共 8 条'));
+      assert.ok(msg.includes('#5000'));
+      assert.ok(msg.includes('#5004'));
+      assert.ok(!msg.includes('#5005'));
+      assert.ok(msg.includes('(其余 3 条反馈请查阅队列文件)'));
+    });
   });
 });

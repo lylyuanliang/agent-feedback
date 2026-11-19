@@ -667,6 +667,64 @@ export function getAgentApiExecutable(): string {
 }
 
 /**
+ * 格式化反馈工单内容为 Markdown 安全文本：
+ * 1. 规避 Markdown Link Reference Definition 隐式语法（如 [#ID]:）导致的文本与标题吞噬
+ * 2. 针对多行反馈，逐行添加 Markdown 引用符号 (>) 与行末双空格硬换行 (  )，确保在 CommonMark/GFM 渲染器下 100% 独立换行展示
+ * 3. 附带路由、平台与附件元数据摘要（如存在）
+ */
+export function formatFeedbackForWakeMessage(
+  item: InAppFeedback,
+  idx: number,
+  total: number
+): string {
+  const title = total > 1
+    ? `**📌 反馈工单 #${item.id}** (${idx + 1}/${total})：`
+    : `**📌 反馈工单 #${item.id}**：`;
+
+  const metaParts: string[] = [];
+  if (item.telemetry?.route) {
+    metaParts.push(`📍 路由: \`${item.telemetry.route}\``);
+  }
+  if (item.telemetry?.platform) {
+    metaParts.push(`📱 平台: ${item.telemetry.platform}`);
+  }
+  if (item.media && item.media.length > 0) {
+    metaParts.push(`📎 附件: ${item.media.length} 个媒体文件`);
+  } else if (item.screenshots && item.screenshots.length > 0) {
+    metaParts.push(`📷 截图: ${item.screenshots.length} 张`);
+  }
+
+  const metaLine = metaParts.length > 0 ? `> *${metaParts.join(' | ')}*\n> ` : '';
+
+  const rawContent = (item.content || '').trim();
+  const contentLines = rawContent
+    ? rawContent.split(/\r?\n/).map(line => {
+        const trimmed = line.trimEnd();
+        return trimmed ? `> ${trimmed}  ` : '>';
+      }).join('\n')
+    : '> *(无文字描述)*';
+
+  return metaLine ? `${title}\n${metaLine}\n${contentLines}` : `${title}\n${contentLines}`;
+}
+
+/**
+ * 构造 Antigravity 智能体唤醒提示消息：
+ * 1. 规避 Markdown Link Reference Definition 隐式语法导致的工单号与第一行文本吞噬
+ * 2. 针对反馈正文逐行转义并在行末注入双空格硬换行，防止 Markdown 段落软换行坍塌合并
+ * 3. 限制单次唤醒最多详细展示 5 条工单，超出部分提示查阅文件
+ */
+export function buildWakeMessage(batch: InAppFeedback[]): string {
+  const formattedItems = batch
+    .slice(0, 5)
+    .map((item, idx) => formatFeedbackForWakeMessage(item, idx, batch.length))
+    .join('\n\n');
+
+  const moreText = batch.length > 5 ? `\n\n*(其余 ${batch.length - 5} 条反馈请查阅队列文件)*` : '';
+
+  return `📥 [Agent Feedback 自动唤醒] 捕获到端侧真实新反馈 (共 ${batch.length} 条)：\n\n${formattedItems}${moreText}\n\n请立即进入排查与自愈修复流程。`;
+}
+
+/**
  * 向 Antigravity 会话发送主动唤醒通知（保留完整换行格式与段落结构）
  */
 export async function sendAntigravityMessage(convId: string, message: string): Promise<void> {
@@ -932,18 +990,7 @@ export async function startSentinel(options: WatcherOptions = {}): Promise<void>
             log('[*] 🔔 触发 Antigravity 响应式唤醒机制...');
             const activeConvId = convId || options.conversationId || process.env.ANTIGRAVITY_CONVERSATION_ID || detectAntigravityConversation(storageDir || process.cwd());
             if (activeConvId) {
-              const formattedItems = processedBatch
-                .slice(0, 5)
-                .map((item, idx) => {
-                  const prefix = processedBatch.length > 1
-                    ? `• [#${item.id}] (第 ${idx + 1}/${processedBatch.length} 条):`
-                    : `[#${item.id}]:`;
-                  const cleanContent = (item.content || '').trim();
-                  return `${prefix}\n${cleanContent}`;
-                })
-                .join('\n\n');
-              const moreText = processedBatch.length > 5 ? `\n\n(其余 ${processedBatch.length - 5} 条反馈请查阅队列文件)` : '';
-              const wakeMsg = `📥 [Agent Feedback 自动唤醒] 捕获到端侧真实新反馈 (共 ${processedBatch.length} 条)：\n\n${formattedItems}${moreText}\n\n请立即进入排查与自愈修复流程。`;
+              const wakeMsg = buildWakeMessage(processedBatch);
               try {
                 await sendAntigravityMessage(activeConvId, wakeMsg);
                 log(`[*] 🚀 已通过 agentapi 向 Antigravity 会话 [${activeConvId}] 发送主动唤醒消息！`);
