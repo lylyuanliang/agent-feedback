@@ -188,6 +188,8 @@ const {
   registerAgentFeedbackWidget,
   autoMountWidget,
   registerExtensionTab,
+  unregisterExtensionTab,
+  getRegisteredExtensionTabs,
   setAccessControl,
   getAccessControl,
   setHostChannel,
@@ -663,6 +665,25 @@ describe('@agent-feedback/client <agent-feedback-widget> Web Component', () => {
     // 切换离开时触发清理函数
     widget.setTab('submit');
     assert.strictEqual(cleanupCalled, true, 'Extension cleanup should be invoked when tab switches');
+  });
+
+  it('should support unregisterExtensionTab and getRegisteredExtensionTabs for pluggable lifecycle', () => {
+    registerExtensionTab({
+      id: 'temp-tab-pluggable',
+      label: '临时测试页签',
+      render: () => {}
+    });
+
+    const list = getRegisteredExtensionTabs();
+    assert.ok(list.some(t => t.id === 'temp-tab-pluggable'));
+
+    // 验证返回防御性浅拷贝，外部篡改不影响内部注册表
+    list.pop();
+    assert.ok(getRegisteredExtensionTabs().some(t => t.id === 'temp-tab-pluggable'));
+
+    // 测试动态拔除注销插槽
+    unregisterExtensionTab('temp-tab-pluggable');
+    assert.strictEqual(getRegisteredExtensionTabs().some(t => t.id === 'temp-tab-pluggable'), false);
   });
   it('should maintain multi-panel architecture for zero-flicker tab transitions', () => {
     const widget = new AgentFeedbackWidget();

@@ -53,16 +53,28 @@ export function registerExtensionTab(tab: FeedbackExtensionTab): void {
     list.push(tab);
   }
   (window as any).__AGENT_FEEDBACK_EXTENSIONS__ = list;
+  notifyWidgetsRefresh();
+}
 
-  // 通知页面上已挂载的组件刷新
-  if (typeof document !== 'undefined' && typeof document.querySelectorAll === 'function') {
-    const widgets = document.querySelectorAll('agent-feedback-widget');
-    widgets.forEach((w: any) => {
-      if (typeof w.refreshWidget === 'function') {
-        w.refreshWidget();
-      }
-    });
-  }
+/**
+ * 注销并拔除指定的扩展 Tab
+ * @param id 需要移除的扩展 Tab 唯一标识符
+ */
+export function unregisterExtensionTab(id: string): void {
+  if (typeof window === 'undefined') return;
+  const list: FeedbackExtensionTab[] = (window as any).__AGENT_FEEDBACK_EXTENSIONS__ || [];
+  const nextList = list.filter(t => t.id !== id);
+  (window as any).__AGENT_FEEDBACK_EXTENSIONS__ = nextList;
+  notifyWidgetsRefresh();
+}
+
+/**
+ * 获取当前已注册的所有扩展 Tab 列表 (返回防御性浅拷贝)
+ */
+export function getRegisteredExtensionTabs(): FeedbackExtensionTab[] {
+  if (typeof window === 'undefined') return [];
+  const list: FeedbackExtensionTab[] = (window as any).__AGENT_FEEDBACK_EXTENSIONS__ || [];
+  return [...list];
 }
 
 let globalAccessControl: AccessControlConfig = {};
