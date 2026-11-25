@@ -664,6 +664,19 @@ npx agent-feedback notice "🎉 新版本已部署，修复了详情页图片偶
 npx agent-feedback update-status <feedback-id> completed "经排查问题已修复并在当前版本生效，请在端侧下拉刷新验证。" --dir scratch/feedback
 ```
 
+> [!IMPORTANT]
+> **AI Agent 状态回写契约与 `AGENTS.md` 最佳实践（必读）**<br>
+> 当 AI Agent 被哨兵唤醒并完成缺陷修复后，调用 `update-status` 时**仅支持以下标准状态枚举**：
+> - `completed`：排查修复完成并已验证通过；
+> - `rejected`：恶意注入、无效输入或越权诉求已被拦截驳回；
+> - `processing`：正在处理中（由哨兵在唤醒时自动写入）。<br>
+>
+> **⚠️ 严禁盲猜使用 `resolved`、`done`、`closed` 等非标准状态名！** 建议在新接入项目的根目录 `AGENTS.md`（或 `CLAUDE.md` / `.cursorrules`）中加入如下一行协作规约，确保任何新会话 AI 都能零偏差完成闭环回写：
+>
+> ```markdown
+> - 移动端反馈闭环回写：排查修复完成后，必须使用 `npx agent-feedback update-status <id> completed|rejected "说明" --dir scratch/feedback` 回写状态（仅允许使用 `completed` 或 `rejected`，严禁自造 `resolved` 等状态名）。
+> ```
+
 ---
 
 ## 📦 Monorepo 子包生态矩阵
@@ -677,17 +690,22 @@ npx agent-feedback update-status <feedback-id> completed "经排查问题已修�
 
 ---
 
-## 📱 完整参考项目 (Reference Implementation)
+## 📱 完整参考项目 (Reference Implementations)
 
-本项目已在开源户外拓扑应用 **《每周一山 · 成都周边50座山》** 中完成端到端全链路落地与实战检验：
+本项目已在以下多形态开源真实应用中完成端到端全链路落地与实战检验：
 
-- 🔗 **参考工程 GitHub 仓库**：[lylyuanliang/weekly-mountain](https://github.com/lylyuanliang/weekly-mountain)
-- 🌿 **完整接入代码分支**：[`main`](https://github.com/lylyuanliang/weekly-mountain)
+### 1. 《每周一山 · 成都周边50座山 / 重庆周边36座山》（Capacitor + Vue 3 混合移动应用范例）
+- 🔗 **GitHub 仓库**：[lylyuanliang/weekly-mountain](https://github.com/lylyuanliang/weekly-mountain)（分支：[`main`](https://github.com/lylyuanliang/weekly-mountain)）
+- **架构落地与最佳实践亮点**：
+  1. **职责正交解耦 (Clean Separation of Concerns)**：在宿主工程的 `vite.config.js` 中，业务构建逻辑与服务保持在独立插件中，而将所有的真机现场抓取、日级分片落盘与哨兵唤醒彻底委托给 `agentFeedback()` 插件，实现极高内聚与清晰解耦。
+  2. **统一开发者入口与扩展槽 (Unified Developer Hub via Extension Tabs)**：调用 `registerExtensionTab`，将内测在线更新、下载进度展示、WakeLock 切屏防中断以及局域网穿透诊断等能力无缝注入为同一个悬浮模态框的自定义 Tab，手机屏幕上只有一个悬浮胶囊即可纵览全部开发者能力。
+  3. **沉浸式主题系统融合 (Design System Integration)**：悬浮组件天然支持暗黑高山拓扑半透明玻璃拟物风，与宿主黑曜石高山设计系统融为一体。
 
-### 架构落地与最佳实践亮点
-1. **职责正交解耦 (Clean Separation of Concerns)**：在宿主工程的 `vite.config.js` 中，业务构建逻辑与服务保持在独立插件中，而将所有的真机现场抓取、日级分片落盘与哨兵唤醒彻底委托给 `agentFeedback()` 插件，实现极高内聚与清晰解耦。
-2. **统一开发者入口与扩展槽 (Unified Developer Hub via Extension Tabs)**：调用 `registerExtensionTab`，将内测在线更新、下载进度展示、WakeLock 切屏防中断以及局域网穿透诊断等能力无缝注入为同一个悬浮模态框的自定义 Tab，手机屏幕上只有一个悬浮胶囊即可纵览全部开发者能力。
-3. **沉浸式主题系统融合 (Design System Integration)**：悬浮组件天然支持暗黑高山拓扑半透明玻璃拟物风，与宿主黑曜石高山设计系统融为一体。
+### 2. 《MantraKey · 离线隐私密码与助记词管理器》（纯原生 Android WebView 混合容器范例）
+- 🔗 **GitHub 仓库**：[lylyuanliang/mantra-key](https://github.com/lylyuanliang/mantra-key)
+- **架构落地与最佳实践亮点**：
+  1. **纯原生 Android WebView 容器适配**：在纯原生 Kotlin + `android.webkit.WebView` + `WebViewAssetLoader` 宿主中完整实现了 `WebChromeClient.onShowFileChooser`、`ClipData` 多选解析与 `FLAG_GRANT_READ_URI_PERMISSION` 赋权，实践经验已沉淀为本仓库的[《原生 Android WebView 容器深度集成指南》](docs/integrations/android-webview-guide.md)。
+  2. **AI 自愈回写规范落地**：在项目 `AGENTS.md` 中严格约束 AI Agent 使用 `npx agent-feedback update-status <id> completed` 完成真机反馈自愈闭环，实现纯原生宿主容器下的真机反馈直连与热修复验证。
 
 ---
 
